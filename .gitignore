@@ -1,0 +1,38 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local application configuration and data
+config.local.json
+*.local.json
+data/
+
+# Wails and Go build output
+build/bin/
+bin/
+dist/
+coverage.out
+*.test
+*.prof
+
+# Frontend dependencies and output
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+node_modules/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# IDE and operating system files
+.DS_Store
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.example.json
