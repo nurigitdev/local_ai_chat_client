@@ -33,6 +33,13 @@ Wails Desktop Application
 - **Initial AI interface:** OpenAI-compatible API
 - **Future agent interface:** A2A protocol
 
+## 문서
+
+- [상세 아키텍처](docs/architecture.md): 컴포넌트 책임, 데이터 흐름, 인터페이스, 보안 및 A2A 확장 설계
+- [개발 진행 현황](docs/progress.md): 마일스톤 체크리스트, 현재 작업, 결정 사항 및 변경 이력
+
+README는 프로젝트의 목표와 전체 방향을 설명합니다. 구현 수준의 설계와 진행 상태는 위 문서에서 별도로 관리합니다.
+
 ## 개발 단계
 
 ### 1. 기본 채팅
