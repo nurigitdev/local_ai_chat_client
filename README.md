@@ -44,12 +44,86 @@ README는 프로젝트의 목표와 전체 방향을 설명합니다. 구현 수
 
 ### 공통 사전 준비
 
-소스에서 빌드하려면 다음 도구가 필요합니다.
+소스에서 빌드하려면 다음 개발 도구가 필요합니다. 이 도구들은 저장소에 포함되지 않으므로 처음 한 번 직접 설치해야 합니다.
 
-- Git
-- Go 1.25 이상
-- Node.js와 npm
-- Wails 3.0.0-beta.11 CLI
+| 도구 | 요구 버전 | 용도 | 확인 명령 |
+|---|---:|---|---|
+| Git | 최신 안정 버전 권장 | 저장소 복제 및 버전 관리 | `git --version` |
+| Go | 1.25 이상 | 백엔드와 데스크톱 바이너리 빌드 | `go version` |
+| Node.js | 20.19 이상 또는 22.12 이상 | React·Vite 프런트엔드 빌드 | `node --version` |
+| npm | Node.js에 포함된 버전 | 프런트엔드 패키지 설치 | `npm --version` |
+| Wails CLI | 3.0.0-beta.11 | 개발 실행 및 운영체제 패키징 | `wails3 version` |
+
+#### macOS 개발 도구 설치
+
+Homebrew가 설치되어 있다면 Git, Go 및 Node.js를 한 번에 설치할 수 있습니다.
+
+```bash
+brew install git go node
+```
+
+Homebrew를 사용하지 않는 경우 [Git 설치 페이지](https://git-scm.com/install/mac), [Go 공식 설치 파일](https://go.dev/dl/) 및 [Node.js LTS 설치 파일](https://nodejs.org/en/download)을 각각 설치합니다. Xcode Command Line Tools를 설치하면 Apple Git도 함께 제공됩니다.
+
+```bash
+xcode-select --install
+git --version
+go version
+node --version
+npm --version
+```
+
+#### Windows 개발 도구 설치
+
+PowerShell에서 `winget`을 사용해 설치할 수 있습니다.
+
+```powershell
+winget install --id Git.Git -e --source winget
+winget install --id GoLang.Go -e --source winget
+winget install --id OpenJS.NodeJS.LTS -e --source winget
+```
+
+설치 후 PowerShell을 새로 열고 버전을 확인합니다.
+
+```powershell
+git --version
+go version
+node --version
+npm --version
+```
+
+`winget`을 사용할 수 없다면 [Git for Windows](https://git-scm.com/install/windows), [Go 공식 설치 파일](https://go.dev/dl/) 및 [Node.js LTS 설치 파일](https://nodejs.org/en/download)을 이용합니다.
+
+#### Linux 개발 도구 설치
+
+Ubuntu와 Debian 계열:
+
+```bash
+sudo apt update
+sudo apt install git golang-go nodejs npm
+```
+
+Fedora:
+
+```bash
+sudo dnf install git golang nodejs npm
+```
+
+Arch Linux:
+
+```bash
+sudo pacman -S git go nodejs npm
+```
+
+배포판 저장소의 Go 또는 Node.js가 요구 버전보다 오래됐을 수 있습니다. 설치 후 반드시 버전을 확인하고, 조건을 충족하지 않으면 [Go 공식 설치 안내](https://go.dev/doc/install)와 [Node.js LTS 설치 파일](https://nodejs.org/en/download)을 사용합니다.
+
+```bash
+git --version
+go version
+node --version
+npm --version
+```
+
+#### Wails CLI와 프로젝트 설치
 
 저장소를 내려받고 프로젝트 디렉터리로 이동합니다.
 
@@ -58,7 +132,7 @@ git clone https://github.com/taengson/agent-chat-desktop.git
 cd agent-chat-desktop
 ```
 
-Wails 3 CLI와 프런트엔드 의존성을 설치합니다.
+프로젝트가 사용하는 Wails 3.0.0-beta.11 CLI와 프런트엔드 의존성을 설치합니다. `@latest` 대신 프로젝트와 동일한 버전을 지정해야 생성 코드와 빌드 도구의 차이를 피할 수 있습니다.
 
 macOS와 Linux:
 
@@ -79,6 +153,7 @@ npm install --prefix frontend
 설치 상태와 운영체제별 시스템 의존성을 확인합니다.
 
 ```shell
+wails3 version
 wails3 doctor
 ```
 
