@@ -27,9 +27,9 @@ Wails Desktop Application
     └── A2A client and orchestration
 ```
 
-- **Desktop framework:** Wails
+- **Desktop framework:** Wails 3
 - **Backend:** Go
-- **Frontend:** TypeScript 기반 웹 UI
+- **Frontend:** React + TypeScript
 - **Initial AI interface:** OpenAI-compatible API
 - **Future agent interface:** A2A protocol
 
@@ -39,6 +39,72 @@ Wails Desktop Application
 - [개발 진행 현황](docs/progress.md): 마일스톤 체크리스트, 현재 작업, 결정 사항 및 변경 이력
 
 README는 프로젝트의 목표와 전체 방향을 설명합니다. 구현 수준의 설계와 진행 상태는 위 문서에서 별도로 관리합니다.
+
+## 프로그램 실행 방법
+
+### 사전 준비
+
+다음 도구가 필요합니다.
+
+- Go 1.25 이상
+- Node.js와 npm
+- Wails 3 CLI
+
+저장소를 내려받고 프로젝트 디렉터리로 이동합니다.
+
+```shell
+git clone https://github.com/taengson/agent-chat-desktop.git
+cd agent-chat-desktop
+```
+
+Wails 3 CLI와 프런트엔드 의존성을 설치합니다.
+
+```shell
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.11
+export PATH="$(go env GOPATH)/bin:$PATH"
+npm install --prefix frontend
+```
+
+### 개발 모드로 실행
+
+소스 변경을 자동 반영하는 개발 모드로 앱을 실행합니다.
+
+```shell
+wails3 task dev
+```
+
+명령을 찾을 수 없다는 메시지가 나오면 Wails 실행 파일을 직접 지정할 수 있습니다.
+
+```shell
+"$(go env GOPATH)/bin/wails3" task dev
+```
+
+### macOS 앱으로 실행
+
+배포용 `.app`을 생성하고 실행합니다.
+
+```shell
+wails3 task package
+open bin/agent-chat-desktop.app
+```
+
+이미 앱이 실행 중이라면 기존 프로세스를 완전히 종료한 후 새로 패키징한 앱을 실행해야 변경 사항이 적용됩니다. 현재 연결 정보와 대화는 아직 메모리에만 있으므로 앱을 종료하면 초기화됩니다.
+
+실행 파일만 빌드하려면 다음 명령을 사용합니다.
+
+```shell
+wails3 build
+```
+
+### 로컬 LLM 연결
+
+vLLM 또는 다른 OpenAI 호환 API 서버를 먼저 실행한 후 앱에서 다음 순서로 연결합니다.
+
+1. 서버 URL에 vLLM 또는 OpenAI 호환 서버 주소를 입력합니다. 루트 주소와 `/v1`이 포함된 주소를 모두 사용할 수 있습니다.
+2. 서버에서 인증을 요구할 때만 API 키를 입력합니다.
+3. **모델 불러오기**를 누르고 사용할 모델을 선택합니다.
+4. 메시지를 입력해 스트리밍 응답을 확인합니다. 생성 중에는 **중단** 버튼으로 요청을 취소할 수 있습니다.
+5. 긴 대화는 휠이나 트랙패드로 이동할 수 있으며 **이전 메시지 ↑**, **최신 메시지 ↓** 버튼도 사용할 수 있습니다.
 
 ## 개발 단계
 
@@ -82,7 +148,7 @@ README는 프로젝트의 목표와 전체 방향을 설명합니다. 구현 수
 
 ## 프로젝트 상태
 
-현재는 프로젝트 초기 구성 단계입니다. 첫 번째 마일스톤은 vLLM 서버에 연결하여 스트리밍 응답을 표시하고 생성을 중단할 수 있는 데스크톱 채팅 앱입니다.
+첫 번째 목표인 로컬 LLM 채팅 UI를 완료했습니다. Wails 데스크톱 앱에서 실제 OpenAI 호환 서버의 모델을 조회하고 선택한 모델과 스트리밍 방식으로 대화하는 흐름을 확인했습니다. 생성 중단도 구현되어 있으며, 다음 단계는 대화·연결 프로필의 로컬 저장과 API 키의 안전한 보관입니다.
 
 ## 라이선스
 

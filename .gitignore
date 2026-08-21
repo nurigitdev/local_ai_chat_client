@@ -12,17 +12,28 @@ data/
 
 # Wails and Go build output
 build/bin/
-bin/
-dist/
+/bin/
+/dist/
+.task/
 coverage.out
 *.test
 *.prof
 
 # Frontend dependencies and output
 frontend/node_modules/
-frontend/dist/
+frontend/dist/*
+!frontend/dist/.gitkeep
 frontend/.vite/
+frontend/package.json.md5
 node_modules/
+
+# Generated platform build state
+build/linux/appimage/build/
+build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+build/ios/xcode/overlay.json
+build/ios/xcode/gen/
+build/android/overlay.json
+build/android/gen/
 
 # Logs and temporary files
 *.log

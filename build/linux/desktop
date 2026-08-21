@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Name=Agent Chat
+Comment=A desktop client for local and OpenAI-compatible AI models
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/agent-chat-desktop %u
+Terminal=false
+Type=Application
+Icon=agent-chat-desktop
+Categories=Utility;
+StartupWMClass=agent-chat-desktop
