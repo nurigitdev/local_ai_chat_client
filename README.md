@@ -42,13 +42,14 @@ README는 프로젝트의 목표와 전체 방향을 설명합니다. 구현 수
 
 ## 프로그램 실행 방법
 
-### 사전 준비
+### 공통 사전 준비
 
-다음 도구가 필요합니다.
+소스에서 빌드하려면 다음 도구가 필요합니다.
 
+- Git
 - Go 1.25 이상
 - Node.js와 npm
-- Wails 3 CLI
+- Wails 3.0.0-beta.11 CLI
 
 저장소를 내려받고 프로젝트 디렉터리로 이동합니다.
 
@@ -59,13 +60,31 @@ cd agent-chat-desktop
 
 Wails 3 CLI와 프런트엔드 의존성을 설치합니다.
 
-```shell
+macOS와 Linux:
+
+```bash
 go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.11
 export PATH="$(go env GOPATH)/bin:$PATH"
 npm install --prefix frontend
 ```
 
-### 개발 모드로 실행
+Windows PowerShell:
+
+```powershell
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.11
+$env:Path = "$(go env GOPATH)\bin;$env:Path"
+npm install --prefix frontend
+```
+
+설치 상태와 운영체제별 시스템 의존성을 확인합니다.
+
+```shell
+wails3 doctor
+```
+
+자세한 최신 요구 사항은 [Wails 3 설치 문서](https://v3.wails.io/getting-started/installation/)에서 확인할 수 있습니다.
+
+### 개발 모드 공통 실행
 
 소스 변경을 자동 반영하는 개발 모드로 앱을 실행합니다.
 
@@ -73,28 +92,197 @@ npm install --prefix frontend
 wails3 task dev
 ```
 
-명령을 찾을 수 없다는 메시지가 나오면 Wails 실행 파일을 직접 지정할 수 있습니다.
+`wails3` 명령을 찾지 못하면 Go 바이너리 디렉터리가 `PATH`에 포함됐는지 확인하고 터미널을 다시 시작합니다. macOS와 Linux에서는 다음과 같이 직접 실행할 수도 있습니다.
 
-```shell
+```bash
 "$(go env GOPATH)/bin/wails3" task dev
 ```
 
-### macOS 앱으로 실행
+### macOS
 
-배포용 `.app`을 생성하고 실행합니다.
+#### 빌드 환경
 
-```shell
+Xcode Command Line Tools가 필요합니다.
+
+```bash
+xcode-select --install
+xcode-select -p
+```
+
+#### 패키지 생성
+
+현재 CPU 아키텍처용 `.app` 번들을 생성합니다.
+
+```bash
 wails3 task package
+```
+
+결과는 `bin/agent-chat-desktop.app`입니다. Intel과 Apple Silicon을 함께 지원하는 Universal 앱 또는 DMG 설치 이미지는 다음과 같이 생성합니다.
+
+```bash
+wails3 task darwin:package:universal
+wails3 task darwin:package:dmg
+```
+
+현재 `.app` 패키지는 ad-hoc 서명됩니다. 외부 배포에서는 Apple Developer ID 서명과 공증을 별도로 구성해야 합니다.
+
+#### 설치 및 실행
+
+빌드 디렉터리에서 바로 실행합니다.
+
+```bash
 open bin/agent-chat-desktop.app
 ```
 
-이미 앱이 실행 중이라면 기존 프로세스를 완전히 종료한 후 새로 패키징한 앱을 실행해야 변경 사항이 적용됩니다. 현재 연결 정보와 대화는 아직 메모리에만 있으므로 앱을 종료하면 초기화됩니다.
+일반 애플리케이션처럼 설치하려면 Finder에서 `.app`을 `/Applications`로 옮기거나 다음 명령을 사용합니다.
 
-실행 파일만 빌드하려면 다음 명령을 사용합니다.
+```bash
+cp -R bin/agent-chat-desktop.app /Applications/
+open -a "Agent Chat"
+```
 
-```shell
+DMG를 생성했다면 파일을 열고 Agent Chat을 Applications 폴더로 드래그합니다. 서명·공증되지 않은 개발 빌드에 macOS 경고가 표시되면 Finder에서 앱을 Control-클릭한 뒤 **열기**를 선택합니다.
+
+### Windows
+
+#### 빌드 환경
+
+Windows 10/11에 일반적으로 포함된 Microsoft WebView2 Runtime이 필요합니다. `wails3 doctor`로 설치 여부를 확인할 수 있습니다. 기본 NSIS 설치 프로그램을 만들려면 NSIS도 설치합니다.
+
+```powershell
+winget install NSIS.NSIS
+wails3 doctor
+```
+
+#### 패키지 생성
+
+PowerShell에서 Windows 실행 파일을 빌드합니다.
+
+```powershell
 wails3 build
 ```
+
+결과는 `bin\agent-chat-desktop.exe`입니다. 직접 실행하려면 다음 명령을 사용합니다.
+
+```powershell
+.\bin\agent-chat-desktop.exe
+```
+
+NSIS 설치 프로그램은 다음 명령으로 생성합니다.
+
+```powershell
+wails3 task package
+```
+
+결과는 `bin\agent-chat-desktop-<ARCH>-installer.exe`입니다. 관리자 권한 없이 현재 사용자 영역에 설치하는 패키지가 필요하면 다음 변수를 지정합니다.
+
+```powershell
+wails3 task package INSTALL_SCOPE=user
+```
+
+#### 설치 및 실행
+
+생성된 `agent-chat-desktop-<ARCH>-installer.exe`를 실행하고 설치 마법사를 완료합니다. 설치가 끝나면 시작 메뉴 또는 바탕 화면의 **Agent Chat** 바로 가기로 실행합니다. 서명되지 않은 개발 패키지는 Windows SmartScreen 경고가 표시될 수 있으므로 공개 배포 전에는 Authenticode 서명이 필요합니다.
+
+### Linux
+
+#### 빌드 환경
+
+기본 빌드는 GTK4와 WebKitGTK 6.0을 사용합니다. Ubuntu 24.04 또는 Debian 13 이상에서는 다음 의존성을 설치합니다.
+
+```bash
+sudo apt update
+sudo apt install build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
+wails3 doctor
+```
+
+Fedora:
+
+```bash
+sudo dnf install gcc pkg-config gtk4-devel webkitgtk6.0-devel
+```
+
+Arch Linux:
+
+```bash
+sudo pacman -S base-devel gtk4 webkitgtk-6.0
+```
+
+배포판별 최신 의존성과 구형 GTK3 빌드 안내는 [Wails 3 Linux 패키징 문서](https://v3.wails.io/guides/build/linux/)를 참고합니다.
+
+#### 패키지 생성
+
+실행 파일만 빌드합니다.
+
+```bash
+wails3 build
+./bin/agent-chat-desktop
+```
+
+AppImage, DEB, RPM 및 Arch Linux 패키지를 모두 생성합니다.
+
+```bash
+export GIT_COMMITTER_NAME="$(git config user.name)"
+export GIT_COMMITTER_EMAIL="$(git config user.email)"
+wails3 task package
+```
+
+필요한 형식만 생성할 수도 있습니다.
+
+```bash
+wails3 task linux:create:appimage
+wails3 task linux:create:deb
+wails3 task linux:create:rpm
+wails3 task linux:create:aur
+```
+
+생성 파일은 `bin/` 디렉터리에 저장됩니다.
+
+#### 설치 및 실행
+
+AppImage:
+
+```bash
+chmod +x bin/*.AppImage
+./bin/*.AppImage
+```
+
+Ubuntu와 Debian 계열의 DEB 패키지:
+
+```bash
+sudo apt install ./bin/*.deb
+agent-chat-desktop
+```
+
+Fedora와 RHEL 계열의 RPM 패키지:
+
+```bash
+sudo dnf install ./bin/*.rpm
+agent-chat-desktop
+```
+
+Arch Linux 패키지:
+
+```bash
+sudo pacman -U ./bin/*.pkg.tar.zst
+agent-chat-desktop
+```
+
+설치 패키지는 실행 파일을 `/usr/local/bin/agent-chat-desktop`에 배치하고 데스크톱 애플리케이션 메뉴 항목을 등록합니다.
+
+### 다른 운영체제용 빌드
+
+가장 안정적인 방법은 대상 운영체제에서 직접 패키징하는 것입니다. 다른 운영체제에서 교차 빌드해야 한다면 Docker 기반 도구를 먼저 준비합니다.
+
+```shell
+wails3 task setup:docker
+```
+
+교차 빌드는 플랫폼별 패키징 도구와 코드 서명이 추가로 필요할 수 있습니다. Windows와 Linux 패키지는 Taskfile에 구성되어 있지만 현재 프로젝트에서 실제 패키징 및 실행 검증이 완료된 환경은 macOS입니다.
+
+### 실행 시 주의 사항
+
+이미 앱이 실행 중이라면 기존 프로세스를 완전히 종료한 후 새로 패키징한 앱을 실행해야 변경 사항이 적용됩니다. 현재 연결 정보와 대화는 아직 메모리에만 있으므로 앱을 종료하면 초기화됩니다.
 
 ### 로컬 LLM 연결
 
