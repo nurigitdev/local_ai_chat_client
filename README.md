@@ -123,6 +123,56 @@ node --version
 npm --version
 ```
 
+#### Linux와 WSL의 GUI 의존성 및 한글 글꼴
+
+이 프로젝트의 기본 Linux 지원 기준은 **Ubuntu 24.04 이상**입니다. 기본 빌드는 GTK4와 WebKitGTK 6.0을 사용합니다. Ubuntu 22.04와 같이 WebKitGTK 6.0을 제공하지 않는 환경은 기본 지원 대상이 아니며 별도의 GTK3 레거시 빌드 설정이 필요합니다.
+
+Ubuntu 24.04 이상:
+
+```bash
+sudo apt update
+sudo apt install build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev fontconfig
+```
+
+Fedora:
+
+```bash
+sudo dnf install gcc pkg-config gtk4-devel webkitgtk6.0-devel fontconfig
+```
+
+Arch Linux:
+
+```bash
+sudo pacman -S base-devel gtk4 webkitgtk-6.0 fontconfig
+```
+
+현재 앱은 운영체제의 시스템 글꼴을 사용합니다. 일반적인 Linux 데스크톱에는 한글 글꼴이 이미 설치되어 있을 수 있으므로 모든 환경에서 추가 설치가 필요한 것은 아닙니다. 다음 명령의 결과가 비어 있으면 한글 글꼴을 설치합니다.
+
+```bash
+fc-list :lang=ko family | head
+```
+
+Ubuntu, Debian 및 WSL의 Ubuntu 배포판:
+
+```bash
+sudo apt install fonts-noto-cjk
+sudo fc-cache -fv
+```
+
+컬러 이모지 표시가 필요하면 `fonts-noto-color-emoji`도 설치할 수 있습니다.
+
+```bash
+sudo apt install fonts-noto-color-emoji
+```
+
+WSL은 글꼴을 지원하지 않는 환경이 아닙니다. WSLg에서 실행되는 앱은 Windows 글꼴이 아니라 WSL 배포판 내부의 Linux 글꼴을 사용하므로, 최소 설치 환경에는 한글 글꼴이 없을 수 있습니다. 글꼴 설치 후에도 반영되지 않으면 Windows PowerShell에서 WSL을 종료한 뒤 다시 시작합니다.
+
+```powershell
+wsl --shutdown
+```
+
+WSL에서 기본 빌드를 실행하면 Windows `.exe`가 아니라 WSLg에서 동작하는 Linux 실행 파일이 생성됩니다. Windows 배포용 프로그램은 Windows PowerShell 환경에서 빌드하는 것을 권장합니다.
+
 #### Wails CLI와 프로젝트 설치
 
 저장소를 내려받고 프로젝트 디렉터리로 이동합니다.
@@ -263,24 +313,10 @@ wails3 task package INSTALL_SCOPE=user
 
 #### 빌드 환경
 
-기본 빌드는 GTK4와 WebKitGTK 6.0을 사용합니다. Ubuntu 24.04 또는 Debian 13 이상에서는 다음 의존성을 설치합니다.
+앞의 **Linux와 WSL의 GUI 의존성 및 한글 글꼴** 절에 따라 GTK4, WebKitGTK 6.0과 필요한 글꼴을 먼저 준비합니다. 설치가 끝나면 다음 명령으로 빌드 환경을 확인합니다.
 
 ```bash
-sudo apt update
-sudo apt install build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
 wails3 doctor
-```
-
-Fedora:
-
-```bash
-sudo dnf install gcc pkg-config gtk4-devel webkitgtk6.0-devel
-```
-
-Arch Linux:
-
-```bash
-sudo pacman -S base-devel gtk4 webkitgtk-6.0
 ```
 
 배포판별 최신 의존성과 구형 GTK3 빌드 안내는 [Wails 3 Linux 패키징 문서](https://v3.wails.io/guides/build/linux/)를 참고합니다.
