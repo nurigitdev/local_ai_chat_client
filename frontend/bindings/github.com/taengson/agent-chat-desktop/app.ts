@@ -13,8 +13,24 @@ export function CancelChat(requestID: string): $CancellablePromise<boolean> {
     return $Call.ByID(2522773405, requestID);
 }
 
+export function CreateConversation(): $CancellablePromise<$models.Conversation> {
+    return $Call.ByID(1021935206);
+}
+
+export function ListConversations(): $CancellablePromise<$models.ConversationSummary[] | null> {
+    return $Call.ByID(1664713955);
+}
+
 export function ListModels(profile: $models.ConnectionProfile): $CancellablePromise<$models.Model[] | null> {
     return $Call.ByID(919729239, profile);
+}
+
+export function OpenConversation(id: string): $CancellablePromise<$models.Conversation> {
+    return $Call.ByID(3465756378, id);
+}
+
+export function SaveConversation(conversation: $models.Conversation): $CancellablePromise<$models.Conversation> {
+    return $Call.ByID(3192203735, conversation);
 }
 
 export function StartChat(request: $models.ChatRequest): $CancellablePromise<void> {

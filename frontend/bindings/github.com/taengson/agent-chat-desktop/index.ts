@@ -11,5 +11,8 @@ export type {
     ChatMessage,
     ChatRequest,
     ConnectionProfile,
+    Conversation,
+    ConversationMessage,
+    ConversationSummary,
     Model
 } from "./models.js";

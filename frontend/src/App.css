@@ -11,10 +11,11 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    gap: 36px;
+    gap: 28px;
     padding: 32px 24px 24px;
     border-right: 1px solid #e4e4df;
     background: #efefeb;
+    overflow-y: auto;
 }
 
 .brand {
@@ -52,6 +53,15 @@
     gap: 16px;
 }
 
+.conversations {
+    display: flex;
+    flex: 1 1 150px;
+    flex-direction: column;
+    min-height: 118px;
+    max-height: 250px;
+    gap: 10px;
+}
+
 .section-heading {
     display: flex;
     align-items: center;
@@ -60,6 +70,73 @@
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.08em;
+}
+
+.new-conversation-button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: #56564f;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 650;
+}
+
+.new-conversation-button:not(:disabled):hover {
+    color: #11110f;
+}
+
+.conversation-list {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+}
+
+.conversation-empty {
+    margin: 8px 0;
+    color: #96968e;
+    font-size: 11px;
+}
+
+.conversation-item {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+    padding: 9px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: #4d4d47;
+    cursor: pointer;
+    text-align: left;
+}
+
+.conversation-item:not(:disabled):hover {
+    background: #e6e6e1;
+}
+
+.conversation-item.active {
+    border-color: #dadad3;
+    background: #fafaf8;
+}
+
+.conversation-item > span {
+    overflow: hidden;
+    color: #383833;
+    font-size: 12px;
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.conversation-item small {
+    color: #92928a;
+    font-size: 10px;
+    font-weight: 500;
 }
 
 .connection-dot {
@@ -188,6 +265,15 @@ button:disabled {
     white-space: nowrap;
 }
 
+.chat-model {
+    max-width: 38%;
+    overflow: hidden;
+    color: #818179;
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .eyebrow {
     color: #96968d;
     font-size: 9px;
@@ -305,6 +391,23 @@ button:disabled {
     color: #85857d;
     font-size: 13px;
     line-height: 1.6;
+}
+
+.empty-state-button {
+    height: 36px;
+    margin-top: 22px;
+    padding: 0 14px;
+    border: 1px solid #292925;
+    border-radius: 8px;
+    background: #292925;
+    color: #fff;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.empty-state-button:not(:disabled):hover {
+    background: #11110f;
 }
 
 .message-column {

@@ -1,7 +1,13 @@
 import {FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState, WheelEvent} from 'react';
 import {Events} from '@wailsio/runtime';
 import {App as ChatService} from '../bindings/github.com/taengson/agent-chat-desktop';
-import type {ChatEvent, ChatRequest} from '../bindings/github.com/taengson/agent-chat-desktop/models';
+import type {
+    ChatEvent,
+    ChatRequest,
+    Conversation,
+    ConversationMessage,
+    ConversationSummary,
+} from '../bindings/github.com/taengson/agent-chat-desktop/models';
 import './App.css';
 
 type Role = 'user' | 'assistant';
@@ -36,6 +42,42 @@ function appendAssistantDelta(content: string, delta: string): string {
     return delta.replace(/^(?:[ \t]*\r?\n)+[ \t]*/, '');
 }
 
+function toUIMessage(message: ConversationMessage): UIMessage {
+    return {
+        id: message.id,
+        role: message.role === 'user' ? 'user' : 'assistant',
+        content: message.content,
+        status: ['complete', 'streaming', 'cancelled', 'failed'].includes(message.status)
+            ? message.status as MessageStatus
+            : 'complete',
+    };
+}
+
+function toStoredMessages(messages: UIMessage[]): ConversationMessage[] {
+    return messages.map(({id, role, content, status}) => ({id, role, content, status}));
+}
+
+function summaryFromConversation(conversation: Conversation): ConversationSummary {
+    return {
+        id: conversation.id,
+        title: conversation.title,
+        updatedAt: conversation.updatedAt,
+        messageCount: conversation.messages?.length || 0,
+    };
+}
+
+function sortConversations(conversations: ConversationSummary[]): ConversationSummary[] {
+    return [...conversations].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function formatUpdatedAt(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return '';
+    }
+    return new Intl.DateTimeFormat('ko-KR', {month: 'short', day: 'numeric'}).format(date);
+}
+
 function App() {
     const [baseURL, setBaseURL] = useState(defaultBaseURL);
     const [apiKey, setAPIKey] = useState('');
@@ -43,6 +85,9 @@ function App() {
     const [selectedModel, setSelectedModel] = useState('');
     const [loadingModels, setLoadingModels] = useState(false);
     const [connectionMessage, setConnectionMessage] = useState('서버 연결 전');
+    const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+    const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+    const [loadingConversations, setLoadingConversations] = useState(true);
     const [messages, setMessages] = useState<UIMessage[]>([]);
     const [input, setInput] = useState('');
     const [busy, setBusy] = useState(false);
@@ -52,8 +97,123 @@ function App() {
 
     const activeRequestRef = useRef<string | null>(null);
     const assistantMessageRef = useRef<string | null>(null);
+    const activeConversationRef = useRef<Conversation | null>(null);
+    const messagesRef = useRef<UIMessage[]>([]);
     const messageListRef = useRef<HTMLDivElement | null>(null);
     const shouldAutoScrollRef = useRef(true);
+    const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+    function replaceMessages(nextMessages: UIMessage[]) {
+        messagesRef.current = nextMessages;
+        setMessages(nextMessages);
+    }
+
+    function activateConversation(conversation: Conversation) {
+        activeConversationRef.current = conversation;
+        setActiveConversation(conversation);
+        replaceMessages((conversation.messages || []).map(toUIMessage));
+        shouldAutoScrollRef.current = true;
+        setCanScrollUp(false);
+        setShowScrollToLatest(false);
+    }
+
+    function upsertConversationSummary(conversation: Conversation) {
+        const summary = summaryFromConversation(conversation);
+        setConversations((current) => sortConversations([
+            summary,
+            ...current.filter((item) => item.id !== summary.id),
+        ]));
+    }
+
+    async function saveMessages(nextMessages: UIMessage[], source = activeConversationRef.current) {
+        if (!source) {
+            return;
+        }
+        const saved = await ChatService.SaveConversation({...source, messages: toStoredMessages(nextMessages)});
+        activeConversationRef.current = saved;
+        setActiveConversation(saved);
+        upsertConversationSummary(saved);
+    }
+
+    function persistMessages(nextMessages: UIMessage[]) {
+        const pendingSave = saveQueueRef.current.then(() => saveMessages(nextMessages));
+        saveQueueRef.current = pendingSave.catch(() => undefined);
+        void pendingSave.catch((reason) => setError(String(reason)));
+    }
+
+    function scheduleMessageSave(nextMessages: UIMessage[]) {
+        if (saveTimerRef.current) {
+            clearTimeout(saveTimerRef.current);
+        }
+        saveTimerRef.current = setTimeout(() => {
+            saveTimerRef.current = null;
+            persistMessages(nextMessages);
+        }, 400);
+    }
+
+    async function createConversation() {
+        if (busy) {
+            return;
+        }
+        try {
+            setError('');
+            const conversation = await ChatService.CreateConversation();
+            activateConversation(conversation);
+            upsertConversationSummary(conversation);
+        } catch (reason) {
+            setError(String(reason));
+        }
+    }
+
+    async function openConversation(id: string) {
+        if (busy || id === activeConversationRef.current?.id) {
+            return;
+        }
+        try {
+            setError('');
+            const conversation = await ChatService.OpenConversation(id);
+            activateConversation(conversation);
+        } catch (reason) {
+            setError(String(reason));
+        }
+    }
+
+    useEffect(() => {
+        let cancelled = false;
+
+        async function loadConversations() {
+            try {
+                const loaded = await ChatService.ListConversations();
+                if (cancelled) {
+                    return;
+                }
+                const nextConversations = sortConversations(loaded || []);
+                setConversations(nextConversations);
+                if (nextConversations.length === 0) {
+                    await createConversation();
+                } else {
+                    const emptyConversation = nextConversations.find((conversation) => conversation.messageCount === 0);
+                    if (emptyConversation) {
+                        await openConversation(emptyConversation.id);
+                    }
+                }
+            } catch (reason) {
+                if (!cancelled) {
+                    setError(String(reason));
+                }
+            } finally {
+                if (!cancelled) {
+                    setLoadingConversations(false);
+                }
+            }
+        }
+
+        void loadConversations();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     useEffect(() => {
         const cancelListener = Events.On('chat:event', (event) => {
@@ -68,11 +228,12 @@ function App() {
 
             const delta = payload.delta;
             if (payload.type === 'delta' && delta) {
-                setMessages((current) => current.map((message) =>
+                replaceMessages(messagesRef.current.map((message) =>
                     message.id === assistantID
                         ? {...message, content: appendAssistantDelta(message.content, delta)}
                         : message,
                 ));
+                scheduleMessageSave(messagesRef.current);
                 return;
             }
 
@@ -88,6 +249,12 @@ function App() {
         return cancelListener;
     }, []);
 
+    useEffect(() => () => {
+        if (saveTimerRef.current) {
+            clearTimeout(saveTimerRef.current);
+        }
+    }, []);
+
     useEffect(() => {
         const element = messageListRef.current;
         if (element && shouldAutoScrollRef.current) {
@@ -98,17 +265,23 @@ function App() {
     }, [messages]);
 
     const canSend = useMemo(
-        () => input.trim() !== '' && selectedModel !== '' && !busy,
-        [input, selectedModel, busy],
+        () => input.trim() !== '' && selectedModel !== '' && activeConversation !== null && !busy,
+        [input, selectedModel, activeConversation, busy],
     );
 
     function finishRequest(assistantID: string, status: MessageStatus) {
-        setMessages((current) => current.map((message) =>
+        const nextMessages = messagesRef.current.map((message) =>
             message.id === assistantID ? {...message, status} : message,
-        ));
+        );
+        replaceMessages(nextMessages);
         activeRequestRef.current = null;
         assistantMessageRef.current = null;
         setBusy(false);
+        if (saveTimerRef.current) {
+            clearTimeout(saveTimerRef.current);
+            saveTimerRef.current = null;
+        }
+        persistMessages(nextMessages);
     }
 
     function updateScrollState(element: HTMLDivElement) {
@@ -190,30 +363,34 @@ function App() {
     async function sendMessage(event?: FormEvent) {
         event?.preventDefault();
         const text = input.trim();
-        if (!text || !selectedModel || busy) {
+        const conversation = activeConversationRef.current;
+        if (!text || !selectedModel || busy || !conversation) {
             return;
         }
 
         const requestID = makeID();
         const userMessage: UIMessage = {id: makeID(), role: 'user', content: text, status: 'complete'};
         const assistantMessage: UIMessage = {id: makeID(), role: 'assistant', content: '', status: 'streaming'};
-        const nextMessages = [...messages, userMessage];
+        const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
 
         activeRequestRef.current = requestID;
         assistantMessageRef.current = assistantMessage.id;
         shouldAutoScrollRef.current = true;
         setShowScrollToLatest(false);
-        setMessages([...nextMessages, assistantMessage]);
+        replaceMessages(nextMessages);
         setInput('');
         setBusy(true);
         setError('');
 
         try {
+            await saveMessages(nextMessages, conversation);
             const request: ChatRequest = {
                 requestID,
                 profile: {baseURL, apiKey},
                 model: selectedModel,
-                messages: nextMessages.map(({role, content}) => ({role, content})),
+                messages: nextMessages
+                    .filter((message) => message.role === 'user' || message.content !== '')
+                    .map(({role, content}) => ({role, content})),
             };
             await ChatService.StartChat(request);
         } catch (reason) {
@@ -246,6 +423,30 @@ function App() {
                         <span>Local AI desktop</span>
                     </div>
                 </div>
+
+                <section className="conversations" aria-label="대화">
+                    <div className="section-heading">
+                        <span>대화</span>
+                        <button className="new-conversation-button" type="button" onClick={() => void createConversation()} disabled={busy}>
+                            + 새 대화
+                        </button>
+                    </div>
+                    <div className="conversation-list">
+                        {loadingConversations && <p className="conversation-empty">대화 불러오는 중…</p>}
+                        {!loadingConversations && conversations.map((conversation) => (
+                            <button
+                                className={`conversation-item ${conversation.id === activeConversation?.id ? 'active' : ''}`}
+                                key={conversation.id}
+                                type="button"
+                                onClick={() => void openConversation(conversation.id)}
+                                disabled={busy}
+                            >
+                                <span>{conversation.title}</span>
+                                <small>{conversation.messageCount}개 메시지 · {formatUpdatedAt(conversation.updatedAt)}</small>
+                            </button>
+                        ))}
+                    </div>
+                </section>
 
                 <section className="settings">
                     <div className="section-heading">
@@ -292,22 +493,29 @@ function App() {
                     </label>
                 </section>
 
-                <p className="privacy-note">연결 정보는 아직 저장되지 않으며 현재 실행 중에만 사용됩니다.</p>
+                <p className="privacy-note">대화는 이 컴퓨터의 사용자 설정 폴더에 Markdown 파일로 저장됩니다. 연결 정보는 아직 저장되지 않습니다.</p>
             </aside>
 
             <main className="chat-panel" onWheel={handleChatPanelWheel}>
                 <header className="chat-header">
                     <div>
-                        <span className="eyebrow">CURRENT MODEL</span>
-                        <strong>{selectedModel || '모델을 선택해 주세요'}</strong>
+                        <span className="eyebrow">CURRENT CONVERSATION</span>
+                        <strong>{activeConversation?.title || '대화를 선택해 주세요'}</strong>
                     </div>
-                    {messages.length > 0 && !busy && (
-                        <button className="text-button" onClick={() => setMessages([])}>대화 지우기</button>
-                    )}
+                    <span className="chat-model">{selectedModel || '모델 미선택'}</span>
                 </header>
 
                 <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
-                    {messages.length === 0 ? (
+                    {!activeConversation ? (
+                        <div className="empty-state">
+                            <div className="empty-symbol">AI</div>
+                            <h1>대화를 선택하거나 새로 시작하세요</h1>
+                            <p>왼쪽 목록에서 이전 대화를 열거나 새 대화를 만든 뒤 메시지를 입력하세요.</p>
+                            <button className="empty-state-button" type="button" onClick={() => void createConversation()} disabled={busy}>
+                                새 대화 시작
+                            </button>
+                        </div>
+                    ) : messages.length === 0 ? (
                         <div className="empty-state">
                             <div className="empty-symbol">AI</div>
                             <h1>로컬 모델과 대화를 시작하세요</h1>
@@ -347,8 +555,8 @@ function App() {
                             value={input}
                             onChange={(event) => setInput(event.target.value)}
                             onKeyDown={handleComposerKeyDown}
-                            placeholder={selectedModel ? '메시지를 입력하세요' : '먼저 모델을 연결해 주세요'}
-                            disabled={!selectedModel || busy}
+                            placeholder={!activeConversation ? '대화를 선택하거나 새로 시작해 주세요' : selectedModel ? '메시지를 입력하세요' : '먼저 모델을 연결해 주세요'}
+                            disabled={!activeConversation || !selectedModel || busy}
                             rows={1}
                         />
                         {busy ? (

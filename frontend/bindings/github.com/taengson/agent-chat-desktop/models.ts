@@ -25,6 +25,28 @@ export interface ConnectionProfile {
     "apiKey": string;
 }
 
+export interface Conversation {
+    "id": string;
+    "title": string;
+    "createdAt": string;
+    "updatedAt": string;
+    "messages": ConversationMessage[] | null;
+}
+
+export interface ConversationMessage {
+    "id": string;
+    "role": string;
+    "content": string;
+    "status": string;
+}
+
+export interface ConversationSummary {
+    "id": string;
+    "title": string;
+    "updatedAt": string;
+    "messageCount": number;
+}
+
 export interface Model {
     "id": string;
     "ownedBy"?: string;

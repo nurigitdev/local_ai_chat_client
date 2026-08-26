@@ -46,12 +46,16 @@ type ChatEvent struct {
 type App struct {
 	ctx context.Context
 
-	mu      sync.Mutex
-	cancels map[string]context.CancelFunc
+	mu            sync.Mutex
+	cancels       map[string]context.CancelFunc
+	conversations *conversationStore
 }
 
 func NewApp() *App {
-	return &App{cancels: make(map[string]context.CancelFunc)}
+	return &App{
+		cancels:       make(map[string]context.CancelFunc),
+		conversations: newConversationStore(""),
+	}
 }
 
 func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
@@ -88,6 +92,22 @@ func (a *App) ListModels(profile ConnectionProfile) ([]Model, error) {
 		result = append(result, Model{ID: model.ID, OwnedBy: model.OwnedBy})
 	}
 	return result, nil
+}
+
+func (a *App) ListConversations() ([]ConversationSummary, error) {
+	return a.conversations.List()
+}
+
+func (a *App) OpenConversation(id string) (Conversation, error) {
+	return a.conversations.Open(id)
+}
+
+func (a *App) CreateConversation() (Conversation, error) {
+	return a.conversations.Create()
+}
+
+func (a *App) SaveConversation(conversation Conversation) (Conversation, error) {
+	return a.conversations.Save(conversation)
 }
 
 func (a *App) StartChat(request ChatRequest) error {
