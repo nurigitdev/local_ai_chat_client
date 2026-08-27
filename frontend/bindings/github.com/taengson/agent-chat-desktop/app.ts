@@ -17,6 +17,10 @@ export function CreateConversation(): $CancellablePromise<$models.Conversation> 
     return $Call.ByID(1021935206);
 }
 
+export function DeleteConversation(id: string): $CancellablePromise<void> {
+    return $Call.ByID(1702807921, id);
+}
+
 export function ListConversations(): $CancellablePromise<$models.ConversationSummary[] | null> {
     return $Call.ByID(1664713955);
 }
@@ -25,8 +29,16 @@ export function ListModels(profile: $models.ConnectionProfile): $CancellableProm
     return $Call.ByID(919729239, profile);
 }
 
+export function LoadConnectionProfile(): $CancellablePromise<$models.SavedConnectionProfile> {
+    return $Call.ByID(1786048502);
+}
+
 export function OpenConversation(id: string): $CancellablePromise<$models.Conversation> {
     return $Call.ByID(3465756378, id);
+}
+
+export function SaveConnectionProfile(profile: $models.SavedConnectionProfile): $CancellablePromise<$models.SavedConnectionProfile> {
+    return $Call.ByID(3622685069, profile);
 }
 
 export function SaveConversation(conversation: $models.Conversation): $CancellablePromise<$models.Conversation> {

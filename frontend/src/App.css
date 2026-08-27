@@ -274,6 +274,94 @@ button:disabled {
     white-space: nowrap;
 }
 
+.chat-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-width: 0;
+}
+
+.delete-conversation-button {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: #a35a51;
+    cursor: pointer;
+    font-size: 11px;
+}
+
+.delete-conversation-button:hover {
+    color: #813d35;
+}
+
+.dialog-backdrop {
+    position: fixed;
+    z-index: 10;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(31, 31, 27, 0.28);
+}
+
+.confirmation-dialog {
+    box-sizing: border-box;
+    width: min(390px, 100%);
+    padding: 24px;
+    border: 1px solid #d8d8d1;
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 18px 55px rgba(31, 31, 27, 0.22);
+}
+
+.confirmation-dialog h2 {
+    margin: 0;
+    color: #292925;
+    font-size: 17px;
+    letter-spacing: -0.02em;
+}
+
+.confirmation-dialog p {
+    margin: 10px 0 0;
+    color: #6f6f67;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 22px;
+}
+
+.dialog-cancel-button,
+.dialog-delete-button {
+    height: 35px;
+    padding: 0 13px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.dialog-cancel-button {
+    border: 1px solid #d8d8d1;
+    background: #fff;
+    color: #4d4d47;
+}
+
+.dialog-delete-button {
+    border: 1px solid #a34e45;
+    background: #a34e45;
+    color: #fff;
+}
+
+.dialog-delete-button:not(:disabled):hover {
+    background: #843c34;
+}
+
 .eyebrow {
     color: #96968d;
     font-size: 9px;

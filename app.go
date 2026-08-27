@@ -49,12 +49,14 @@ type App struct {
 	mu            sync.Mutex
 	cancels       map[string]context.CancelFunc
 	conversations *conversationStore
+	profiles      *connectionProfileStore
 }
 
 func NewApp() *App {
 	return &App{
 		cancels:       make(map[string]context.CancelFunc),
 		conversations: newConversationStore(""),
+		profiles:      newConnectionProfileStore(""),
 	}
 }
 
@@ -102,12 +104,24 @@ func (a *App) OpenConversation(id string) (Conversation, error) {
 	return a.conversations.Open(id)
 }
 
+func (a *App) DeleteConversation(id string) error {
+	return a.conversations.Delete(id)
+}
+
 func (a *App) CreateConversation() (Conversation, error) {
 	return a.conversations.Create()
 }
 
 func (a *App) SaveConversation(conversation Conversation) (Conversation, error) {
 	return a.conversations.Save(conversation)
+}
+
+func (a *App) LoadConnectionProfile() (SavedConnectionProfile, error) {
+	return a.profiles.Load()
+}
+
+func (a *App) SaveConnectionProfile(profile SavedConnectionProfile) (SavedConnectionProfile, error) {
+	return a.profiles.Save(profile)
 }
 
 func (a *App) StartChat(request ChatRequest) error {

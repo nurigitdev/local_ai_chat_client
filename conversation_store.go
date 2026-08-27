@@ -139,6 +139,26 @@ func (s *conversationStore) Open(id string) (Conversation, error) {
 	return conversation, nil
 }
 
+func (s *conversationStore) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !isSafeConversationID(id) {
+		return errors.New("올바르지 않은 대화 ID입니다")
+	}
+	directory, err := s.directory()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(directory, id+".md")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("대화를 찾을 수 없습니다")
+		}
+		return fmt.Errorf("대화를 삭제할 수 없습니다: %w", err)
+	}
+	return nil
+}
+
 func (s *conversationStore) Save(conversation Conversation) (Conversation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -200,13 +220,9 @@ func (s *conversationStore) saveLocked(conversation Conversation) error {
 }
 
 func (s *conversationStore) directory() (string, error) {
-	root := s.root
-	if root == "" {
-		configDirectory, err := os.UserConfigDir()
-		if err != nil {
-			return "", fmt.Errorf("사용자 설정 폴더를 찾을 수 없습니다: %w", err)
-		}
-		root = filepath.Join(configDirectory, "Agent Chat")
+	root, err := applicationDataDirectory(s.root)
+	if err != nil {
+		return "", err
 	}
 	directory := filepath.Join(root, conversationDirectory)
 	if err := os.MkdirAll(directory, 0o700); err != nil {

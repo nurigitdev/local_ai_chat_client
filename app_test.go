@@ -2,6 +2,9 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/taengson/agent-chat-desktop/internal/provider/openai"
@@ -62,11 +65,74 @@ func TestConversationStoreCreatesSavesAndOpensMarkdownConversation(t *testing.T)
 	if opened.Messages[0].Content != conversation.Messages[0].Content || opened.Messages[1].Content != conversation.Messages[1].Content {
 		t.Fatalf("Open() messages = %#v", opened.Messages)
 	}
+
+	if err := store.Delete(saved.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if _, err := store.Open(saved.ID); err == nil {
+		t.Fatal("Open() succeeded after Delete()")
+	}
+	summaries, err = store.List()
+	if err != nil {
+		t.Fatalf("List() after Delete() error = %v", err)
+	}
+	if len(summaries) != 0 {
+		t.Fatalf("List() after Delete() = %#v", summaries)
+	}
 }
 
 func TestConversationStoreRejectsUnsafeConversationID(t *testing.T) {
 	store := newConversationStore(t.TempDir())
 	if _, err := store.Open("../outside"); err == nil {
 		t.Fatal("Open() accepted an unsafe ID")
+	}
+	if err := store.Delete("../outside"); err == nil {
+		t.Fatal("Delete() accepted an unsafe ID")
+	}
+}
+
+func TestConnectionProfileStoreSavesOnlyServerURL(t *testing.T) {
+	root := t.TempDir()
+	store := newConnectionProfileStore(root)
+	profile := SavedConnectionProfile{BaseURL: "http://localhost:8000/v1"}
+
+	saved, err := store.Save(profile)
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if saved != profile {
+		t.Fatalf("Save() = %#v, want %#v", saved, profile)
+	}
+
+	contents, err := os.ReadFile(filepath.Join(root, profileDirectory, defaultProfileFile))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if strings.Contains(strings.ToLower(string(contents)), "api") || strings.Contains(string(contents), "key") || strings.Contains(string(contents), "model") {
+		t.Fatalf("saved profile contains more than a server URL: %q", contents)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded != profile {
+		t.Fatalf("Load() = %#v, want %#v", loaded, profile)
+	}
+}
+
+func TestConnectionProfileStoreRejectsURLsThatMayContainCredentials(t *testing.T) {
+	store := newConnectionProfileStore(t.TempDir())
+	for _, baseURL := range []string{
+		"https://token@example.com/v1",
+		"https://example.com/v1?api_key=secret",
+		"https://example.com/v1#access-token",
+		"ftp://example.com",
+	} {
+		t.Run(baseURL, func(t *testing.T) {
+			if _, err := store.Save(SavedConnectionProfile{BaseURL: baseURL}); err == nil {
+				t.Fatal("Save() accepted an unsafe URL")
+			}
+		})
 	}
 }

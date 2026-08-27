@@ -51,3 +51,12 @@ export interface Model {
     "id": string;
     "ownedBy"?: string;
 }
+
+/**
+ * SavedConnectionProfile deliberately contains only the server URL. Models are
+ * fetched from that server when the user chooses to load them, and API keys
+ * remain in memory only.
+ */
+export interface SavedConnectionProfile {
+    "baseURL": string;
+}

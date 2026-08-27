@@ -7,6 +7,7 @@ import type {
     Conversation,
     ConversationMessage,
     ConversationSummary,
+    SavedConnectionProfile,
 } from '../bindings/github.com/taengson/agent-chat-desktop/models';
 import './App.css';
 
@@ -78,6 +79,20 @@ function formatUpdatedAt(value: string): string {
     return new Intl.DateTimeFormat('ko-KR', {month: 'short', day: 'numeric'}).format(date);
 }
 
+function canSaveConnectionProfile(baseURL: string): boolean {
+    try {
+        const parsed = new URL(baseURL);
+        return (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+            && parsed.host !== ''
+            && parsed.username === ''
+            && parsed.password === ''
+            && parsed.search === ''
+            && parsed.hash === '';
+    } catch {
+        return false;
+    }
+}
+
 function App() {
     const [baseURL, setBaseURL] = useState(defaultBaseURL);
     const [apiKey, setAPIKey] = useState('');
@@ -85,9 +100,12 @@ function App() {
     const [selectedModel, setSelectedModel] = useState('');
     const [loadingModels, setLoadingModels] = useState(false);
     const [connectionMessage, setConnectionMessage] = useState('서버 연결 전');
+    const [connectionProfileReady, setConnectionProfileReady] = useState(false);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
     const [loadingConversations, setLoadingConversations] = useState(true);
+    const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null);
+    const [deletingConversation, setDeletingConversation] = useState(false);
     const [messages, setMessages] = useState<UIMessage[]>([]);
     const [input, setInput] = useState('');
     const [busy, setBusy] = useState(false);
@@ -103,6 +121,8 @@ function App() {
     const shouldAutoScrollRef = useRef(true);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+    const connectionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const skipInitialConnectionSaveRef = useRef(true);
 
     function replaceMessages(nextMessages: UIMessage[]) {
         messagesRef.current = nextMessages;
@@ -179,6 +199,42 @@ function App() {
         }
     }
 
+    function requestConversationDelete() {
+        const conversation = activeConversationRef.current;
+        if (!conversation || busy) {
+            return;
+        }
+        setConversationToDelete(conversation);
+    }
+
+    async function confirmConversationDelete() {
+        const conversation = conversationToDelete;
+        if (!conversation || busy || deletingConversation) {
+            return;
+        }
+
+        try {
+            setDeletingConversation(true);
+            setError('');
+            await ChatService.DeleteConversation(conversation.id);
+            setConversations((current) => current.filter((item) => item.id !== conversation.id));
+            if (activeConversationRef.current?.id === conversation.id) {
+                activeConversationRef.current = null;
+                setActiveConversation(null);
+                replaceMessages([]);
+            }
+            setInput('');
+            shouldAutoScrollRef.current = true;
+            setCanScrollUp(false);
+            setShowScrollToLatest(false);
+            setConversationToDelete(null);
+        } catch (reason) {
+            setError(String(reason));
+        } finally {
+            setDeletingConversation(false);
+        }
+    }
+
     useEffect(() => {
         let cancelled = false;
 
@@ -214,6 +270,57 @@ function App() {
             cancelled = true;
         };
     }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        async function loadConnectionProfile() {
+            try {
+                const profile = await ChatService.LoadConnectionProfile();
+                if (cancelled) {
+                    return;
+                }
+                if (profile.baseURL) {
+                    setBaseURL(profile.baseURL);
+                    setConnectionMessage('저장된 서버 주소를 불러왔습니다. 모델을 불러와 선택해 주세요');
+                }
+            } catch (reason) {
+                if (!cancelled) {
+                    setError(String(reason));
+                }
+            } finally {
+                if (!cancelled) {
+                    setConnectionProfileReady(true);
+                }
+            }
+        }
+
+        void loadConnectionProfile();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!connectionProfileReady) {
+            return;
+        }
+        if (skipInitialConnectionSaveRef.current) {
+            skipInitialConnectionSaveRef.current = false;
+            return;
+        }
+        if (!canSaveConnectionProfile(baseURL)) {
+            return;
+        }
+        if (connectionSaveTimerRef.current) {
+            clearTimeout(connectionSaveTimerRef.current);
+        }
+        const profile: SavedConnectionProfile = {baseURL};
+        connectionSaveTimerRef.current = setTimeout(() => {
+            connectionSaveTimerRef.current = null;
+            void ChatService.SaveConnectionProfile(profile).catch((reason) => setError(String(reason)));
+        }, 400);
+    }, [baseURL, connectionProfileReady]);
 
     useEffect(() => {
         const cancelListener = Events.On('chat:event', (event) => {
@@ -252,6 +359,9 @@ function App() {
     useEffect(() => () => {
         if (saveTimerRef.current) {
             clearTimeout(saveTimerRef.current);
+        }
+        if (connectionSaveTimerRef.current) {
+            clearTimeout(connectionSaveTimerRef.current);
         }
     }, []);
 
@@ -493,7 +603,7 @@ function App() {
                     </label>
                 </section>
 
-                <p className="privacy-note">대화는 이 컴퓨터의 사용자 설정 폴더에 Markdown 파일로 저장됩니다. 연결 정보는 아직 저장되지 않습니다.</p>
+                <p className="privacy-note">서버 URL만 이 컴퓨터에 저장됩니다. 모델과 API 키는 저장하지 않으며 앱을 다시 열면 모델을 불러오고 API 키를 다시 입력해야 합니다.</p>
             </aside>
 
             <main className="chat-panel" onWheel={handleChatPanelWheel}>
@@ -502,7 +612,14 @@ function App() {
                         <span className="eyebrow">CURRENT CONVERSATION</span>
                         <strong>{activeConversation?.title || '대화를 선택해 주세요'}</strong>
                     </div>
-                    <span className="chat-model">{selectedModel || '모델 미선택'}</span>
+                    <div className="chat-header-actions">
+                        <span className="chat-model">{selectedModel || '모델 미선택'}</span>
+                        {activeConversation && !busy && (
+                            <button className="delete-conversation-button" type="button" onClick={requestConversationDelete}>
+                                대화 삭제
+                            </button>
+                        )}
+                    </div>
                 </header>
 
                 <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
@@ -570,6 +687,22 @@ function App() {
                     <span className="composer-hint">Enter 전송 · Shift + Enter 줄바꿈</span>
                 </div>
             </main>
+            {conversationToDelete && (
+                <div className="dialog-backdrop" role="presentation">
+                    <section className="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-conversation-title">
+                        <h2 id="delete-conversation-title">대화를 삭제할까요?</h2>
+                        <p>“{conversationToDelete.title}” 대화와 저장된 기록을 삭제합니다. 이 작업은 되돌릴 수 없습니다.</p>
+                        <div className="dialog-actions">
+                            <button type="button" className="dialog-cancel-button" onClick={() => setConversationToDelete(null)} disabled={deletingConversation}>
+                                취소
+                            </button>
+                            <button type="button" className="dialog-delete-button" onClick={() => void confirmConversationDelete()} disabled={deletingConversation}>
+                                {deletingConversation ? '삭제 중…' : '삭제'}
+                            </button>
+                        </div>
+                    </section>
+                </div>
+            )}
         </div>
     );
 }
