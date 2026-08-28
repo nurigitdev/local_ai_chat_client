@@ -23,10 +23,12 @@ const (
 var messageMarker = regexp.MustCompile(`(?m)^<!-- agent-chat-message (\{.*\}) -->\r?\n?`)
 
 type ConversationMessage struct {
-	ID      string `json:"id"`
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	Status  string `json:"status"`
+	ID      string           `json:"id"`
+	Role    string           `json:"role"`
+	Content string           `json:"content"`
+	Status  string           `json:"status"`
+	Usage   *TokenUsage      `json:"usage,omitempty"`
+	Metrics *ResponseMetrics `json:"metrics,omitempty"`
 }
 
 type Conversation struct {
@@ -246,11 +248,13 @@ func marshalConversation(conversation Conversation) ([]byte, error) {
 
 	for _, message := range conversation.Messages {
 		marker, err := json.Marshal(struct {
-			ID      string `json:"id"`
-			Role    string `json:"role"`
-			Status  string `json:"status"`
-			Content int    `json:"contentBytes"`
-		}{ID: message.ID, Role: message.Role, Status: message.Status, Content: len([]byte(message.Content))})
+			ID      string           `json:"id"`
+			Role    string           `json:"role"`
+			Status  string           `json:"status"`
+			Content int              `json:"contentBytes"`
+			Usage   *TokenUsage      `json:"usage,omitempty"`
+			Metrics *ResponseMetrics `json:"metrics,omitempty"`
+		}{ID: message.ID, Role: message.Role, Status: message.Status, Content: len([]byte(message.Content)), Usage: message.Usage, Metrics: message.Metrics})
 		if err != nil {
 			return nil, fmt.Errorf("메시지 정보를 저장할 수 없습니다: %w", err)
 		}
@@ -296,10 +300,12 @@ func parseConversation(contents []byte) (Conversation, error) {
 	messages := make([]ConversationMessage, 0, len(matches))
 	for index, match := range matches {
 		var metadata struct {
-			ID      string `json:"id"`
-			Role    string `json:"role"`
-			Status  string `json:"status"`
-			Content *int   `json:"contentBytes"`
+			ID      string           `json:"id"`
+			Role    string           `json:"role"`
+			Status  string           `json:"status"`
+			Content *int             `json:"contentBytes"`
+			Usage   *TokenUsage      `json:"usage,omitempty"`
+			Metrics *ResponseMetrics `json:"metrics,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(body[match[2]:match[3]]), &metadata); err != nil {
 			return Conversation{}, errors.New("메시지 정보가 올바르지 않습니다")
@@ -320,7 +326,7 @@ func parseConversation(contents []byte) (Conversation, error) {
 			content = strings.TrimRight(body[contentStart:contentEnd], "\n")
 		}
 		messages = append(messages, ConversationMessage{
-			ID: metadata.ID, Role: metadata.Role, Status: metadata.Status, Content: content,
+			ID: metadata.ID, Role: metadata.Role, Status: metadata.Status, Content: content, Usage: metadata.Usage, Metrics: metadata.Metrics,
 		})
 	}
 

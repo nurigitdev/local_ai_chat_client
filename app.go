@@ -37,10 +37,29 @@ type ChatRequest struct {
 }
 
 type ChatEvent struct {
-	RequestID string `json:"requestID"`
-	Type      string `json:"type"`
-	Delta     string `json:"delta,omitempty"`
-	Error     string `json:"error,omitempty"`
+	RequestID string           `json:"requestID"`
+	Type      string           `json:"type"`
+	Delta     string           `json:"delta,omitempty"`
+	Usage     *TokenUsage      `json:"usage,omitempty"`
+	Metrics   *ResponseMetrics `json:"metrics,omitempty"`
+	Error     string           `json:"error,omitempty"`
+}
+
+// TokenUsage is the token accounting reported by a compatible chat server for
+// one completed request. Prompt and completion tokens are kept separately so
+// the frontend can present total token usage without estimating tokens from
+// text.
+type TokenUsage struct {
+	PromptTokens     int `json:"promptTokens"`
+	CompletionTokens int `json:"completionTokens"`
+	TotalTokens      int `json:"totalTokens"`
+}
+
+// ResponseMetrics is measured locally for each streaming response. The first
+// token duration is zero when a server finishes without emitting text.
+type ResponseMetrics struct {
+	TotalDurationMs      int64 `json:"totalDurationMs"`
+	FirstTokenDurationMs int64 `json:"firstTokenDurationMs"`
 }
 
 type App struct {
@@ -181,20 +200,43 @@ func (a *App) runChat(
 	messages []openai.Message,
 ) {
 	defer a.removeCancel(requestID)
+	startedAt := time.Now()
+	var firstTokenAt time.Time
 	a.emit(ChatEvent{RequestID: requestID, Type: "started"})
 
-	err := client.StreamChat(ctx, openai.ChatRequest{Model: model, Messages: messages}, func(delta string) {
-		a.emit(ChatEvent{RequestID: requestID, Type: "delta", Delta: delta})
+	err := client.StreamChat(ctx, openai.ChatRequest{Model: model, Messages: messages}, func(chunk openai.StreamChunk) {
+		if chunk.Delta != "" {
+			if firstTokenAt.IsZero() {
+				firstTokenAt = time.Now()
+			}
+			a.emit(ChatEvent{RequestID: requestID, Type: "delta", Delta: chunk.Delta})
+		}
+		if chunk.Usage != nil {
+			a.emit(ChatEvent{RequestID: requestID, Type: "usage", Usage: &TokenUsage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.TotalTokens,
+			}})
+		}
 	})
+	metrics := responseMetrics(startedAt, firstTokenAt)
 	if err == nil {
-		a.emit(ChatEvent{RequestID: requestID, Type: "completed"})
+		a.emit(ChatEvent{RequestID: requestID, Type: "completed", Metrics: metrics})
 		return
 	}
 	if errors.Is(err, context.Canceled) {
-		a.emit(ChatEvent{RequestID: requestID, Type: "cancelled"})
+		a.emit(ChatEvent{RequestID: requestID, Type: "cancelled", Metrics: metrics})
 		return
 	}
-	a.emit(ChatEvent{RequestID: requestID, Type: "failed", Error: friendlyError(err).Error()})
+	a.emit(ChatEvent{RequestID: requestID, Type: "failed", Metrics: metrics, Error: friendlyError(err).Error()})
+}
+
+func responseMetrics(startedAt, firstTokenAt time.Time) *ResponseMetrics {
+	metrics := &ResponseMetrics{TotalDurationMs: time.Since(startedAt).Milliseconds()}
+	if !firstTokenAt.IsZero() {
+		metrics.FirstTokenDurationMs = firstTokenAt.Sub(startedAt).Milliseconds()
+	}
+	return metrics
 }
 
 func (a *App) storeCancel(requestID string, cancel context.CancelFunc) error {

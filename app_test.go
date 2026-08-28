@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/taengson/agent-chat-desktop/internal/provider/openai"
 )
@@ -24,6 +25,18 @@ func TestFriendlyErrorPreservesUnknownError(t *testing.T) {
 	}
 }
 
+func TestResponseMetrics(t *testing.T) {
+	startedAt := time.Now().Add(-2 * time.Second)
+	firstTokenAt := startedAt.Add(450 * time.Millisecond)
+	metrics := responseMetrics(startedAt, firstTokenAt)
+	if metrics.FirstTokenDurationMs != 450 {
+		t.Fatalf("FirstTokenDurationMs = %d, want 450", metrics.FirstTokenDurationMs)
+	}
+	if metrics.TotalDurationMs < 2_000 {
+		t.Fatalf("TotalDurationMs = %d, want at least 2000", metrics.TotalDurationMs)
+	}
+}
+
 func TestConversationStoreCreatesSavesAndOpensMarkdownConversation(t *testing.T) {
 	store := newConversationStore(t.TempDir())
 
@@ -37,7 +50,11 @@ func TestConversationStoreCreatesSavesAndOpensMarkdownConversation(t *testing.T)
 
 	conversation.Messages = []ConversationMessage{
 		{ID: "user-1", Role: "user", Content: "Markdown으로 저장해도 될까?", Status: "complete"},
-		{ID: "assistant-1", Role: "assistant", Content: "\n네, 가능합니다.\n", Status: "complete"},
+		{
+			ID: "assistant-1", Role: "assistant", Content: "\n네, 가능합니다.\n", Status: "complete",
+			Usage:   &TokenUsage{PromptTokens: 21, CompletionTokens: 8, TotalTokens: 29},
+			Metrics: &ResponseMetrics{TotalDurationMs: 1_250, FirstTokenDurationMs: 340},
+		},
 	}
 	saved, err := store.Save(conversation)
 	if err != nil {
@@ -64,6 +81,12 @@ func TestConversationStoreCreatesSavesAndOpensMarkdownConversation(t *testing.T)
 	}
 	if opened.Messages[0].Content != conversation.Messages[0].Content || opened.Messages[1].Content != conversation.Messages[1].Content {
 		t.Fatalf("Open() messages = %#v", opened.Messages)
+	}
+	if opened.Messages[1].Usage == nil || *opened.Messages[1].Usage != (TokenUsage{PromptTokens: 21, CompletionTokens: 8, TotalTokens: 29}) {
+		t.Fatalf("Open() usage = %#v", opened.Messages[1].Usage)
+	}
+	if opened.Messages[1].Metrics == nil || *opened.Messages[1].Metrics != (ResponseMetrics{TotalDurationMs: 1_250, FirstTokenDurationMs: 340}) {
+		t.Fatalf("Open() metrics = %#v", opened.Messages[1].Metrics)
 	}
 
 	if err := store.Delete(saved.ID); err != nil {

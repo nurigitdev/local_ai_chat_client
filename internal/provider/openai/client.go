@@ -37,6 +37,17 @@ type ChatRequest struct {
 	Messages []Message
 }
 
+type TokenUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+type StreamChunk struct {
+	Delta string
+	Usage *TokenUsage
+}
+
 type APIError struct {
 	StatusCode int
 	Message    string
@@ -96,12 +107,20 @@ func (c *Client) ListModels(ctx context.Context) ([]Model, error) {
 	return payload.Data, nil
 }
 
-func (c *Client) StreamChat(ctx context.Context, input ChatRequest, onDelta func(string)) error {
+func (c *Client) StreamChat(ctx context.Context, input ChatRequest, onChunk func(StreamChunk)) error {
 	payload, err := json.Marshal(struct {
-		Model    string    `json:"model"`
-		Messages []Message `json:"messages"`
-		Stream   bool      `json:"stream"`
-	}{Model: input.Model, Messages: input.Messages, Stream: true})
+		Model         string    `json:"model"`
+		Messages      []Message `json:"messages"`
+		Stream        bool      `json:"stream"`
+		StreamOptions struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}{
+		Model: input.Model, Messages: input.Messages, Stream: true,
+		StreamOptions: struct {
+			IncludeUsage bool `json:"include_usage"`
+		}{IncludeUsage: true},
+	})
 	if err != nil {
 		return err
 	}
@@ -148,6 +167,7 @@ func (c *Client) StreamChat(ctx context.Context, input ChatRequest, onDelta func
 			Error *struct {
 				Message string `json:"message"`
 			} `json:"error,omitempty"`
+			Usage *TokenUsage `json:"usage,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return errors.New("스트리밍 응답 형식이 올바르지 않습니다")
@@ -157,8 +177,11 @@ func (c *Client) StreamChat(ctx context.Context, input ChatRequest, onDelta func
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
-				onDelta(choice.Delta.Content)
+				onChunk(StreamChunk{Delta: choice.Delta.Content})
 			}
+		}
+		if chunk.Usage != nil {
+			onChunk(StreamChunk{Usage: chunk.Usage})
 		}
 	}
 	if err := scanner.Err(); err != nil {

@@ -15,5 +15,7 @@ export type {
     ConversationMessage,
     ConversationSummary,
     Model,
-    SavedConnectionProfile
+    ResponseMetrics,
+    SavedConnectionProfile,
+    TokenUsage
 } from "./models.js";

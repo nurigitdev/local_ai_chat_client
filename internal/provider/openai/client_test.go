@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"reflect"
@@ -57,8 +58,20 @@ func TestStreamChat(t *testing.T) {
 		if request.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("path = %q, want /v1/chat/completions", request.URL.Path)
 		}
+		var payload struct {
+			StreamOptions struct {
+				IncludeUsage bool `json:"include_usage"`
+			} `json:"stream_options"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if !payload.StreamOptions.IncludeUsage {
+			t.Fatal("stream_options.include_usage = false, want true")
+		}
 		body := "data: {\"choices\":[{\"delta\":{\"content\":\"안녕\"}}]}\n\n" +
 			"data: {\"choices\":[{\"delta\":{\"content\":\"하세요\"}}]}\n\n" +
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3,\"total_tokens\":15}}\n\n" +
 			"data: [DONE]\n\n"
 		return testResponse(http.StatusOK, "text/event-stream", body), nil
 	})
@@ -67,18 +80,29 @@ func TestStreamChat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	var deltas []string
+	var chunks []StreamChunk
 	err = client.StreamChat(context.Background(), ChatRequest{
 		Model:    "local-model",
 		Messages: []Message{{Role: "user", Content: "테스트"}},
-	}, func(delta string) {
-		deltas = append(deltas, delta)
+	}, func(chunk StreamChunk) {
+		chunks = append(chunks, chunk)
 	})
 	if err != nil {
 		t.Fatalf("StreamChat() error = %v", err)
 	}
+	var deltas []string
+	var usage *TokenUsage
+	for _, chunk := range chunks {
+		deltas = append(deltas, chunk.Delta)
+		if chunk.Usage != nil {
+			usage = chunk.Usage
+		}
+	}
 	if got := strings.Join(deltas, ""); got != "안녕하세요" {
 		t.Fatalf("deltas = %q, want 안녕하세요", got)
+	}
+	if usage == nil || *usage != (TokenUsage{PromptTokens: 12, CompletionTokens: 3, TotalTokens: 15}) {
+		t.Fatalf("usage = %#v", usage)
 	}
 }
 

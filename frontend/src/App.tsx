@@ -7,7 +7,9 @@ import type {
     Conversation,
     ConversationMessage,
     ConversationSummary,
+    ResponseMetrics,
     SavedConnectionProfile,
+    TokenUsage,
 } from '../bindings/github.com/taengson/agent-chat-desktop/models';
 import './App.css';
 
@@ -19,11 +21,19 @@ interface UIMessage {
     role: Role;
     content: string;
     status: MessageStatus;
+    usage?: TokenUsage;
+    metrics?: ResponseMetrics;
 }
 
 interface ModelOption {
     id: string;
     ownedBy?: string;
+}
+
+interface ModelTokenUsage {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
 }
 
 const defaultBaseURL = 'http://localhost:8000';
@@ -51,11 +61,13 @@ function toUIMessage(message: ConversationMessage): UIMessage {
         status: ['complete', 'streaming', 'cancelled', 'failed'].includes(message.status)
             ? message.status as MessageStatus
             : 'complete',
+        usage: message.usage ?? undefined,
+        metrics: message.metrics ?? undefined,
     };
 }
 
 function toStoredMessages(messages: UIMessage[]): ConversationMessage[] {
-    return messages.map(({id, role, content, status}) => ({id, role, content, status}));
+    return messages.map(({id, role, content, status, usage, metrics}) => ({id, role, content, status, usage, metrics}));
 }
 
 function summaryFromConversation(conversation: Conversation): ConversationSummary {
@@ -93,11 +105,42 @@ function canSaveConnectionProfile(baseURL: string): boolean {
     }
 }
 
+function formatTokenCount(value: number): string {
+    if (value < 1_000) {
+        return new Intl.NumberFormat('ko-KR').format(value);
+    }
+    const shortened = value / 1_000;
+    return `${new Intl.NumberFormat('ko-KR', {
+        maximumFractionDigits: shortened < 100 ? 1 : 0,
+    }).format(shortened)}K`;
+}
+
+function formatDuration(milliseconds: number): string {
+    const seconds = milliseconds / 1_000;
+    return `${new Intl.NumberFormat('ko-KR', {
+        minimumFractionDigits: seconds < 10 ? 1 : 0,
+        maximumFractionDigits: seconds < 10 ? 1 : 0,
+    }).format(seconds)}초`;
+}
+
+function formatGenerationSpeed(usage?: TokenUsage, metrics?: ResponseMetrics): string | null {
+    if (!usage || !metrics || usage.completionTokens <= 0 || metrics.firstTokenDurationMs <= 0) {
+        return null;
+    }
+    const generationDuration = metrics.totalDurationMs - metrics.firstTokenDurationMs;
+    if (generationDuration <= 0) {
+        return null;
+    }
+    const tokensPerSecond = usage.completionTokens / (generationDuration / 1_000);
+    return `생성 속도 ${new Intl.NumberFormat('ko-KR', {maximumFractionDigits: 1}).format(tokensPerSecond)} tok/s`;
+}
+
 function App() {
     const [baseURL, setBaseURL] = useState(defaultBaseURL);
     const [apiKey, setAPIKey] = useState('');
     const [models, setModels] = useState<ModelOption[]>([]);
     const [selectedModel, setSelectedModel] = useState('');
+    const [modelTokenUsage, setModelTokenUsage] = useState<Record<string, ModelTokenUsage>>({});
     const [loadingModels, setLoadingModels] = useState(false);
     const [connectionMessage, setConnectionMessage] = useState('서버 연결 전');
     const [connectionProfileReady, setConnectionProfileReady] = useState(false);
@@ -115,6 +158,8 @@ function App() {
 
     const activeRequestRef = useRef<string | null>(null);
     const assistantMessageRef = useRef<string | null>(null);
+    const activeRequestModelRef = useRef<string | null>(null);
+    const usageRecordedForRequestRef = useRef<string | null>(null);
     const activeConversationRef = useRef<Conversation | null>(null);
     const messagesRef = useRef<UIMessage[]>([]);
     const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -246,14 +291,6 @@ function App() {
                 }
                 const nextConversations = sortConversations(loaded || []);
                 setConversations(nextConversations);
-                if (nextConversations.length === 0) {
-                    await createConversation();
-                } else {
-                    const emptyConversation = nextConversations.find((conversation) => conversation.messageCount === 0);
-                    if (emptyConversation) {
-                        await openConversation(emptyConversation.id);
-                    }
-                }
             } catch (reason) {
                 if (!cancelled) {
                     setError(String(reason));
@@ -344,13 +381,38 @@ function App() {
                 return;
             }
 
+            const usage = payload.usage;
+            if (payload.type === 'usage' && usage) {
+                replaceMessages(messagesRef.current.map((message) =>
+                    message.id === assistantID ? {...message, usage} : message,
+                ));
+                if (usageRecordedForRequestRef.current !== payload.requestID) {
+                    const model = activeRequestModelRef.current;
+                    if (model) {
+                        setModelTokenUsage((current) => {
+                            const previous = current[model] || {promptTokens: 0, completionTokens: 0, totalTokens: 0};
+                            return {
+                                ...current,
+                                [model]: {
+                                    promptTokens: previous.promptTokens + usage.promptTokens,
+                                    completionTokens: previous.completionTokens + usage.completionTokens,
+                                    totalTokens: previous.totalTokens + usage.totalTokens,
+                                },
+                            };
+                        });
+                    }
+                    usageRecordedForRequestRef.current = payload.requestID;
+                }
+                return;
+            }
+
             if (payload.type === 'completed') {
-                finishRequest(assistantID, 'complete');
+                finishRequest(assistantID, 'complete', payload.metrics);
             } else if (payload.type === 'cancelled') {
-                finishRequest(assistantID, 'cancelled');
+                finishRequest(assistantID, 'cancelled', payload.metrics);
             } else if (payload.type === 'failed') {
                 setError(payload.error || '응답 생성 중 오류가 발생했습니다.');
-                finishRequest(assistantID, 'failed');
+                finishRequest(assistantID, 'failed', payload.metrics);
             }
         });
         return cancelListener;
@@ -379,13 +441,15 @@ function App() {
         [input, selectedModel, activeConversation, busy],
     );
 
-    function finishRequest(assistantID: string, status: MessageStatus) {
+    function finishRequest(assistantID: string, status: MessageStatus, metrics?: ResponseMetrics | null) {
         const nextMessages = messagesRef.current.map((message) =>
-            message.id === assistantID ? {...message, status} : message,
+            message.id === assistantID ? {...message, status, metrics: metrics ?? message.metrics} : message,
         );
         replaceMessages(nextMessages);
         activeRequestRef.current = null;
         assistantMessageRef.current = null;
+        activeRequestModelRef.current = null;
+        usageRecordedForRequestRef.current = null;
         setBusy(false);
         if (saveTimerRef.current) {
             clearTimeout(saveTimerRef.current);
@@ -456,6 +520,7 @@ function App() {
             const result = await ChatService.ListModels({baseURL, apiKey});
             const nextModels = (result || []) as ModelOption[];
             setModels(nextModels);
+            setModelTokenUsage({});
             setSelectedModel((current) =>
                 nextModels.some((model) => model.id === current) ? current : (nextModels[0]?.id || ''),
             );
@@ -485,6 +550,8 @@ function App() {
 
         activeRequestRef.current = requestID;
         assistantMessageRef.current = assistantMessage.id;
+        activeRequestModelRef.current = selectedModel;
+        usageRecordedForRequestRef.current = null;
         shouldAutoScrollRef.current = true;
         setShowScrollToLatest(false);
         replaceMessages(nextMessages);
@@ -591,7 +658,14 @@ function App() {
                     <p className="connection-message">{connectionMessage}</p>
 
                     <label>
-                        모델
+                        <span className="model-select-heading">
+                            <span>모델</span>
+                            {selectedModel && (
+                                <span className="model-token-usage">
+                                    누적 {formatTokenCount(modelTokenUsage[selectedModel]?.totalTokens || 0)} 토큰
+                                </span>
+                            )}
+                        </span>
                         <select
                             value={selectedModel}
                             onChange={(event) => setSelectedModel(event.target.value)}
@@ -601,6 +675,7 @@ function App() {
                             {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
                         </select>
                     </label>
+
                 </section>
 
                 <p className="privacy-note">서버 URL만 이 컴퓨터에 저장됩니다. 모델과 API 키는 저장하지 않으며 앱을 다시 열면 모델을 불러오고 API 키를 다시 입력해야 합니다.</p>
@@ -613,7 +688,6 @@ function App() {
                         <strong>{activeConversation?.title || '대화를 선택해 주세요'}</strong>
                     </div>
                     <div className="chat-header-actions">
-                        <span className="chat-model">{selectedModel || '모델 미선택'}</span>
                         {activeConversation && !busy && (
                             <button className="delete-conversation-button" type="button" onClick={requestConversationDelete}>
                                 대화 삭제
@@ -647,6 +721,17 @@ function App() {
                                         {message.content || (message.status === 'streaming' ? <span className="typing">생각 중</span> : '')}
                                         {message.status === 'cancelled' && <span className="message-state">중단됨</span>}
                                         {message.status === 'failed' && <span className="message-state error-state">실패</span>}
+                                        {message.role === 'assistant' && message.metrics && (
+                                            <div className="message-metrics">
+                                                <span>응답 {formatDuration(message.metrics.totalDurationMs)}</span>
+                                                {message.metrics.firstTokenDurationMs > 0 && (
+                                                    <span>첫 토큰 {formatDuration(message.metrics.firstTokenDurationMs)}</span>
+                                                )}
+                                                {formatGenerationSpeed(message.usage, message.metrics) && (
+                                                    <span>{formatGenerationSpeed(message.usage, message.metrics)}</span>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 </article>
                             ))}
@@ -665,7 +750,8 @@ function App() {
                     </button>
                 )}
 
-                <div className="composer-area">
+                {activeConversation && (
+                    <div className="composer-area">
                     {error && <div className="error-banner" role="alert">{error}</div>}
                     <form className="composer" onSubmit={sendMessage}>
                         <textarea
@@ -685,7 +771,8 @@ function App() {
                         )}
                     </form>
                     <span className="composer-hint">Enter 전송 · Shift + Enter 줄바꿈</span>
-                </div>
+                    </div>
+                )}
             </main>
             {conversationToDelete && (
                 <div className="dialog-backdrop" role="presentation">

@@ -5,6 +5,8 @@ export interface ChatEvent {
     "requestID": string;
     "type": string;
     "delta"?: string;
+    "usage"?: TokenUsage | null;
+    "metrics"?: ResponseMetrics | null;
     "error"?: string;
 }
 
@@ -38,6 +40,8 @@ export interface ConversationMessage {
     "role": string;
     "content": string;
     "status": string;
+    "usage"?: TokenUsage | null;
+    "metrics"?: ResponseMetrics | null;
 }
 
 export interface ConversationSummary {
@@ -53,10 +57,31 @@ export interface Model {
 }
 
 /**
+ * ResponseMetrics is measured locally for each streaming response. The first
+ * token duration is zero when a server finishes without emitting text.
+ */
+export interface ResponseMetrics {
+    "totalDurationMs": number;
+    "firstTokenDurationMs": number;
+}
+
+/**
  * SavedConnectionProfile deliberately contains only the server URL. Models are
  * fetched from that server when the user chooses to load them, and API keys
  * remain in memory only.
  */
 export interface SavedConnectionProfile {
     "baseURL": string;
+}
+
+/**
+ * TokenUsage is the token accounting reported by a compatible chat server for
+ * one completed request. Prompt and completion tokens are kept separately so
+ * the frontend can present total token usage without estimating tokens from
+ * text.
+ */
+export interface TokenUsage {
+    "promptTokens": number;
+    "completionTokens": number;
+    "totalTokens": number;
 }
