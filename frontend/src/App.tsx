@@ -1,5 +1,7 @@
 import {FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState, WheelEvent} from 'react';
 import {Events} from '@wailsio/runtime';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {App as ChatService} from '../bindings/github.com/taengson/agent-chat-desktop';
 import type {
     ChatEvent,
@@ -133,6 +135,81 @@ function formatGenerationSpeed(usage?: TokenUsage, metrics?: ResponseMetrics): s
     }
     const tokensPerSecond = usage.completionTokens / (generationDuration / 1_000);
     return `생성 속도 ${new Intl.NumberFormat('ko-KR', {maximumFractionDigits: 1}).format(tokensPerSecond)} tok/s`;
+}
+
+type StructuredCodeLanguage = 'diff' | 'json';
+
+interface StructuredCodeBlock {
+    language: StructuredCodeLanguage;
+    content: string;
+}
+
+function isUnifiedDiff(content: string): boolean {
+    const lines = content.split(/\r?\n/);
+    const hasOldFile = lines.some((line) => line.startsWith('--- '));
+    const hasNewFile = lines.some((line) => line.startsWith('+++ '));
+    const hasChange = lines.some((line) => line.startsWith('@@ ')
+        || line.startsWith('+') && !line.startsWith('+++ ')
+        || line.startsWith('-') && !line.startsWith('--- '));
+
+    return hasOldFile && hasNewFile && hasChange;
+}
+
+function detectStructuredCodeBlock(content: string): StructuredCodeBlock | null {
+    const trimmed = content.trim();
+    if (trimmed === '') {
+        return null;
+    }
+    if (isUnifiedDiff(trimmed)) {
+        return {language: 'diff', content: trimmed};
+    }
+
+    try {
+        const parsed = JSON.parse(trimmed);
+        if (typeof parsed === 'object' && parsed !== null) {
+            return {language: 'json', content: JSON.stringify(parsed, null, 2)};
+        }
+    } catch {
+        // A normal Markdown message need not be valid JSON.
+    }
+
+    return null;
+}
+
+function diffLineClassName(line: string): string {
+    if (line.startsWith('+++ ') || line.startsWith('--- ') || line.startsWith('@@ ') || line.startsWith('diff --git ') || line.startsWith('index ')) {
+        return 'diff-meta';
+    }
+    if (line.startsWith('+')) {
+        return 'diff-addition';
+    }
+    if (line.startsWith('-')) {
+        return 'diff-removal';
+    }
+    return '';
+}
+
+function StructuredCode({block}: {block: StructuredCodeBlock}) {
+    if (block.language === 'diff') {
+        return (
+            <pre className="detected-code-block"><code className="language-diff">{block.content.split(/\r?\n/).map((line, index) => (
+                    <span className={`diff-line ${diffLineClassName(line)}`} key={`${index}-${line}`}>
+                        {line || '\u00a0'}
+                    </span>
+                ))}</code></pre>
+        );
+    }
+
+    return <pre className="detected-code-block"><code className="language-json">{block.content}</code></pre>;
+}
+
+function AssistantMessageContent({content}: {content: string}) {
+    const structuredCodeBlock = detectStructuredCodeBlock(content);
+    if (structuredCodeBlock) {
+        return <StructuredCode block={structuredCodeBlock}/>;
+    }
+
+    return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
 }
 
 function App() {
@@ -717,8 +794,12 @@ function App() {
                             {messages.map((message) => (
                                 <article className={`message ${message.role}`} key={message.id}>
                                     <span className="message-role">{message.role === 'user' ? '나' : 'AI'}</span>
-                                    <div className="message-content">
-                                        {message.content || (message.status === 'streaming' ? <span className="typing">생각 중</span> : '')}
+                                    <div className={`message-content${message.role === 'assistant' ? ' markdown-content' : ''}`}>
+                                        {message.content ? (
+                                            message.role === 'assistant' ? (
+                                                <AssistantMessageContent content={message.content}/>
+                                            ) : message.content
+                                        ) : (message.status === 'streaming' ? <span className="typing">생각 중</span> : '')}
                                         {message.status === 'cancelled' && <span className="message-state">중단됨</span>}
                                         {message.status === 'failed' && <span className="message-state error-state">실패</span>}
                                         {message.role === 'assistant' && message.metrics && (
