@@ -274,6 +274,8 @@ function App() {
     function activateConversation(conversation: Conversation) {
         activeConversationRef.current = conversation;
         setActiveConversation(conversation);
+        setRenamingConversation(false);
+        setConversationTitleDraft('');
         replaceMessages((conversation.messages || []).map(toUIMessage));
         shouldAutoScrollRef.current = true;
         setCanScrollUp(false);
@@ -1028,7 +1030,7 @@ function App() {
                             </label>
 
                             <button
-                                className="profile-save-button"
+                                className={`profile-save-button ${selectedSavedConnectionProfileID ? 'update' : 'create'}`}
                                 type="button"
                                 onClick={() => void saveNamedConnectionProfile()}
                                 disabled={busy || savingConnectionProfile || !connectionProfileName.trim()}

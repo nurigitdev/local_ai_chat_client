@@ -288,18 +288,31 @@ button:disabled {
 
 .profile-save-button {
     height: 34px;
-    border: 1px solid #aaa9a1;
     border-radius: 8px;
-    background: transparent;
-    color: #4c4c46;
     cursor: pointer;
     font-size: 11px;
     font-weight: 650;
 }
 
-.profile-save-button:not(:disabled):hover {
-    border-color: #75756d;
-    color: #1f1f1c;
+.profile-save-button.create {
+    border: 1px solid #292925;
+    background: #292925;
+    color: #fff;
+}
+
+.profile-save-button.create:not(:disabled):hover {
+    background: #11110f;
+}
+
+.profile-save-button.update {
+    border: 1px solid #2f6f98;
+    background: #2f6f98;
+    color: #fff;
+}
+
+.profile-save-button.update:not(:disabled):hover {
+    border-color: #245a7b;
+    background: #245a7b;
 }
 
 .profile-delete-button {
