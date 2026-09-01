@@ -85,6 +85,10 @@ function sortConversations(conversations: ConversationSummary[]): ConversationSu
     return [...conversations].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
+function sortSavedConnectionProfiles(profiles: SavedConnectionProfile[]): SavedConnectionProfile[] {
+    return [...profiles].sort((left, right) => left.name.localeCompare(right.name, 'ko-KR'));
+}
+
 function formatUpdatedAt(value: string): string {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) {
@@ -221,14 +225,27 @@ function App() {
     const [loadingModels, setLoadingModels] = useState(false);
     const [connectionMessage, setConnectionMessage] = useState('서버 연결 전');
     const [connectionProfileReady, setConnectionProfileReady] = useState(false);
+    const [savedConnectionProfiles, setSavedConnectionProfiles] = useState<SavedConnectionProfile[]>([]);
+    const [selectedSavedConnectionProfileID, setSelectedSavedConnectionProfileID] = useState('');
+    const [connectionProfileName, setConnectionProfileName] = useState('');
+    const [savingConnectionProfile, setSavingConnectionProfile] = useState(false);
+    const [connectionProfileToDelete, setConnectionProfileToDelete] = useState<SavedConnectionProfile | null>(null);
+    const [deletingConnectionProfile, setDeletingConnectionProfile] = useState(false);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+    const [conversationSearch, setConversationSearch] = useState('');
+    const [conversationsExpanded, setConversationsExpanded] = useState(true);
+    const [connectionsExpanded, setConnectionsExpanded] = useState(true);
     const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
     const [loadingConversations, setLoadingConversations] = useState(true);
     const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null);
     const [deletingConversation, setDeletingConversation] = useState(false);
+    const [renamingConversation, setRenamingConversation] = useState(false);
+    const [conversationTitleDraft, setConversationTitleDraft] = useState('');
     const [messages, setMessages] = useState<UIMessage[]>([]);
     const [input, setInput] = useState('');
     const [busy, setBusy] = useState(false);
+    const [cancelling, setCancelling] = useState(false);
+    const [copiedMessageID, setCopiedMessageID] = useState<string | null>(null);
     const [error, setError] = useState('');
     const [canScrollUp, setCanScrollUp] = useState(false);
     const [showScrollToLatest, setShowScrollToLatest] = useState(false);
@@ -245,6 +262,9 @@ function App() {
     const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
     const connectionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const skipInitialConnectionSaveRef = useRef(true);
+    const cancelRequestedRef = useRef(false);
+    const stopFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const copiedMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     function replaceMessages(nextMessages: UIMessage[]) {
         messagesRef.current = nextMessages;
@@ -357,6 +377,125 @@ function App() {
         }
     }
 
+    function beginConversationRename() {
+        const conversation = activeConversationRef.current;
+        if (!conversation || busy) {
+            return;
+        }
+        setConversationTitleDraft(conversation.title);
+        setRenamingConversation(true);
+    }
+
+    async function saveConversationTitle() {
+        const conversation = activeConversationRef.current;
+        const title = conversationTitleDraft.trim();
+        if (!conversation || busy || !title) {
+            if (!title) {
+                setError('대화 이름을 입력해 주세요.');
+            }
+            return;
+        }
+
+        try {
+            setError('');
+            const saved = await ChatService.SaveConversation({
+                ...conversation,
+                title,
+                messages: toStoredMessages(messagesRef.current),
+            });
+            activeConversationRef.current = saved;
+            setActiveConversation(saved);
+            upsertConversationSummary(saved);
+            setRenamingConversation(false);
+        } catch (reason) {
+            setError(String(reason));
+        }
+    }
+
+    function updateBaseURL(value: string) {
+        setBaseURL(value);
+        setModels([]);
+        setSelectedModel('');
+        setModelTokenUsage({});
+        setConnectionMessage('서버 주소가 변경되었습니다. 모델을 다시 불러와 주세요');
+    }
+
+    function selectSavedConnectionProfile(id: string) {
+        const profile = savedConnectionProfiles.find((item) => item.id === id);
+        setSelectedSavedConnectionProfileID(id);
+        if (!profile) {
+            setConnectionProfileName('');
+            return;
+        }
+
+        setConnectionProfileName(profile.name);
+        updateBaseURL(profile.baseURL);
+        setAPIKey('');
+        setConnectionMessage('프로필을 선택했습니다. API 키를 입력한 뒤 모델을 불러와 주세요');
+    }
+
+    async function saveNamedConnectionProfile() {
+        if (busy || savingConnectionProfile) {
+            return;
+        }
+        if (!canSaveConnectionProfile(baseURL)) {
+            setError('저장할 수 있는 서버 URL을 입력해 주세요.');
+            return;
+        }
+
+        try {
+            setSavingConnectionProfile(true);
+            setError('');
+            const saved = await ChatService.SaveNamedConnectionProfile({
+                id: selectedSavedConnectionProfileID,
+                name: connectionProfileName,
+                baseURL,
+            });
+            setSavedConnectionProfiles((current) => sortSavedConnectionProfiles([
+                ...current.filter((item) => item.id !== saved.id),
+                saved,
+            ]));
+            setSelectedSavedConnectionProfileID(saved.id);
+            setConnectionProfileName(saved.name);
+            setConnectionMessage('연결 프로필을 저장했습니다');
+        } catch (reason) {
+            setError(String(reason));
+        } finally {
+            setSavingConnectionProfile(false);
+        }
+    }
+
+    function requestSavedConnectionProfileDelete() {
+        const profile = savedConnectionProfiles.find((item) => item.id === selectedSavedConnectionProfileID);
+        if (!profile || busy || savingConnectionProfile) {
+            return;
+        }
+        setConnectionProfileToDelete(profile);
+    }
+
+    async function confirmSavedConnectionProfileDelete() {
+        const profile = connectionProfileToDelete;
+        if (!profile || deletingConnectionProfile) {
+            return;
+        }
+        try {
+            setDeletingConnectionProfile(true);
+            setError('');
+            await ChatService.DeleteSavedConnectionProfile(profile.id);
+            setSavedConnectionProfiles((current) => current.filter((item) => item.id !== profile.id));
+            if (selectedSavedConnectionProfileID === profile.id) {
+                setSelectedSavedConnectionProfileID('');
+                setConnectionProfileName('');
+            }
+            setConnectionMessage('연결 프로필을 삭제했습니다');
+            setConnectionProfileToDelete(null);
+        } catch (reason) {
+            setError(String(reason));
+        } finally {
+            setDeletingConnectionProfile(false);
+        }
+    }
+
     useEffect(() => {
         let cancelled = false;
 
@@ -388,12 +527,16 @@ function App() {
     useEffect(() => {
         let cancelled = false;
 
-        async function loadConnectionProfile() {
+        async function loadConnectionProfiles() {
             try {
-                const profile = await ChatService.LoadConnectionProfile();
+                const [profile, profiles] = await Promise.all([
+                    ChatService.LoadConnectionProfile(),
+                    ChatService.ListSavedConnectionProfiles(),
+                ]);
                 if (cancelled) {
                     return;
                 }
+                setSavedConnectionProfiles(sortSavedConnectionProfiles(profiles || []));
                 if (profile.baseURL) {
                     setBaseURL(profile.baseURL);
                     setConnectionMessage('저장된 서버 주소를 불러왔습니다. 모델을 불러와 선택해 주세요');
@@ -409,7 +552,7 @@ function App() {
             }
         }
 
-        void loadConnectionProfile();
+        void loadConnectionProfiles();
         return () => {
             cancelled = true;
         };
@@ -429,7 +572,7 @@ function App() {
         if (connectionSaveTimerRef.current) {
             clearTimeout(connectionSaveTimerRef.current);
         }
-        const profile: SavedConnectionProfile = {baseURL};
+        const profile: SavedConnectionProfile = {id: '', name: '', baseURL};
         connectionSaveTimerRef.current = setTimeout(() => {
             connectionSaveTimerRef.current = null;
             void ChatService.SaveConnectionProfile(profile).catch((reason) => setError(String(reason)));
@@ -449,6 +592,9 @@ function App() {
 
             const delta = payload.delta;
             if (payload.type === 'delta' && delta) {
+                if (cancelRequestedRef.current) {
+                    return;
+                }
                 replaceMessages(messagesRef.current.map((message) =>
                     message.id === assistantID
                         ? {...message, content: appendAssistantDelta(message.content, delta)}
@@ -502,6 +648,12 @@ function App() {
         if (connectionSaveTimerRef.current) {
             clearTimeout(connectionSaveTimerRef.current);
         }
+        if (stopFallbackTimerRef.current) {
+            clearTimeout(stopFallbackTimerRef.current);
+        }
+        if (copiedMessageTimerRef.current) {
+            clearTimeout(copiedMessageTimerRef.current);
+        }
     }, []);
 
     useEffect(() => {
@@ -513,12 +665,23 @@ function App() {
         }
     }, [messages]);
 
+    const visibleConversations = useMemo(() => {
+        const query = conversationSearch.trim().toLocaleLowerCase('ko-KR');
+        if (!query) {
+            return conversations;
+        }
+        return conversations.filter((conversation) => conversation.title.toLocaleLowerCase('ko-KR').includes(query));
+    }, [conversationSearch, conversations]);
+
     const canSend = useMemo(
         () => input.trim() !== '' && selectedModel !== '' && activeConversation !== null && !busy,
         [input, selectedModel, activeConversation, busy],
     );
 
     function finishRequest(assistantID: string, status: MessageStatus, metrics?: ResponseMetrics | null) {
+        if (assistantMessageRef.current !== assistantID) {
+            return;
+        }
         const nextMessages = messagesRef.current.map((message) =>
             message.id === assistantID ? {...message, status, metrics: metrics ?? message.metrics} : message,
         );
@@ -527,6 +690,12 @@ function App() {
         assistantMessageRef.current = null;
         activeRequestModelRef.current = null;
         usageRecordedForRequestRef.current = null;
+        cancelRequestedRef.current = false;
+        setCancelling(false);
+        if (stopFallbackTimerRef.current) {
+            clearTimeout(stopFallbackTimerRef.current);
+            stopFallbackTimerRef.current = null;
+        }
         setBusy(false);
         if (saveTimerRef.current) {
             clearTimeout(saveTimerRef.current);
@@ -612,27 +781,22 @@ function App() {
         }
     }
 
-    async function sendMessage(event?: FormEvent) {
-        event?.preventDefault();
-        const text = input.trim();
-        const conversation = activeConversationRef.current;
-        if (!text || !selectedModel || busy || !conversation) {
-            return;
-        }
-
+    async function beginAssistantResponse(
+        conversation: Conversation,
+        assistantMessage: UIMessage,
+        nextMessages: UIMessage[],
+        requestMessages: UIMessage[],
+    ) {
         const requestID = makeID();
-        const userMessage: UIMessage = {id: makeID(), role: 'user', content: text, status: 'complete'};
-        const assistantMessage: UIMessage = {id: makeID(), role: 'assistant', content: '', status: 'streaming'};
-        const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
-
         activeRequestRef.current = requestID;
         assistantMessageRef.current = assistantMessage.id;
         activeRequestModelRef.current = selectedModel;
         usageRecordedForRequestRef.current = null;
+        cancelRequestedRef.current = false;
+        setCancelling(false);
         shouldAutoScrollRef.current = true;
         setShowScrollToLatest(false);
         replaceMessages(nextMessages);
-        setInput('');
         setBusy(true);
         setError('');
 
@@ -642,7 +806,7 @@ function App() {
                 requestID,
                 profile: {baseURL, apiKey},
                 model: selectedModel,
-                messages: nextMessages
+                messages: requestMessages
                     .filter((message) => message.role === 'user' || message.content !== '')
                     .map(({role, content}) => ({role, content})),
             };
@@ -653,10 +817,97 @@ function App() {
         }
     }
 
+    async function sendMessage(event?: FormEvent) {
+        event?.preventDefault();
+        const text = input.trim();
+        const conversation = activeConversationRef.current;
+        if (!text || !selectedModel || busy || !conversation) {
+            return;
+        }
+
+        const userMessage: UIMessage = {id: makeID(), role: 'user', content: text, status: 'complete'};
+        const assistantMessage: UIMessage = {id: makeID(), role: 'assistant', content: '', status: 'streaming'};
+        const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
+        setInput('');
+        await beginAssistantResponse(conversation, assistantMessage, nextMessages, nextMessages);
+    }
+
+    async function regenerateResponse(messageID: string) {
+        const conversation = activeConversationRef.current;
+        const messageIndex = messagesRef.current.findIndex((message) => message.id === messageID);
+        if (!conversation || !selectedModel || busy || messageIndex < 1 || messageIndex !== messagesRef.current.length - 1) {
+            return;
+        }
+
+        const previousMessages = messagesRef.current.slice(0, messageIndex);
+        const previousMessage = previousMessages[previousMessages.length - 1];
+        if (!previousMessage || previousMessage.role !== 'user') {
+            return;
+        }
+
+        const assistantMessage: UIMessage = {id: messageID, role: 'assistant', content: '', status: 'streaming'};
+        await beginAssistantResponse(conversation, assistantMessage, [...previousMessages, assistantMessage], previousMessages);
+    }
+
+    async function copyMessage(message: UIMessage) {
+        if (!message.content) {
+            return;
+        }
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(message.content);
+            } else {
+                const temporary = document.createElement('textarea');
+                temporary.value = message.content;
+                temporary.style.position = 'fixed';
+                temporary.style.opacity = '0';
+                document.body.append(temporary);
+                temporary.select();
+                const copied = document.execCommand('copy');
+                temporary.remove();
+                if (!copied) {
+                    throw new Error('클립보드에 복사할 수 없습니다.');
+                }
+            }
+            setCopiedMessageID(message.id);
+            if (copiedMessageTimerRef.current) {
+                clearTimeout(copiedMessageTimerRef.current);
+            }
+            copiedMessageTimerRef.current = setTimeout(() => {
+                copiedMessageTimerRef.current = null;
+                setCopiedMessageID(null);
+            }, 1_800);
+        } catch (reason) {
+            setError(String(reason));
+        }
+    }
+
     async function stopGeneration() {
         const requestID = activeRequestRef.current;
-        if (requestID) {
+        const assistantID = assistantMessageRef.current;
+        if (!requestID || !assistantID || cancelling) {
+            return;
+        }
+
+        try {
+            cancelRequestedRef.current = true;
+            setCancelling(true);
             await ChatService.CancelChat(requestID);
+            if (activeRequestRef.current !== requestID || assistantMessageRef.current !== assistantID) {
+                return;
+            }
+            if (stopFallbackTimerRef.current) {
+                clearTimeout(stopFallbackTimerRef.current);
+            }
+            stopFallbackTimerRef.current = setTimeout(() => {
+                if (activeRequestRef.current === requestID && assistantMessageRef.current === assistantID) {
+                    finishRequest(assistantID, 'cancelled');
+                }
+            }, 2_000);
+        } catch (reason) {
+            cancelRequestedRef.current = false;
+            setCancelling(false);
+            setError(String(reason));
         }
     }
 
@@ -678,93 +929,192 @@ function App() {
                     </div>
                 </div>
 
-                <section className="conversations" aria-label="대화">
+                <section className={`conversations ${conversationsExpanded ? '' : 'collapsed'}`} aria-label="대화">
                     <div className="section-heading">
-                        <span>대화</span>
+                        <button
+                            className="section-toggle"
+                            type="button"
+                            onClick={() => setConversationsExpanded((current) => !current)}
+                            aria-expanded={conversationsExpanded}
+                            aria-controls="conversation-content"
+                        >
+                            <span>대화</span>
+                            <span className="section-toggle-indicator" aria-hidden="true">⌄</span>
+                        </button>
                         <button className="new-conversation-button" type="button" onClick={() => void createConversation()} disabled={busy}>
                             + 새 대화
                         </button>
                     </div>
-                    <div className="conversation-list">
-                        {loadingConversations && <p className="conversation-empty">대화 불러오는 중…</p>}
-                        {!loadingConversations && conversations.map((conversation) => (
-                            <button
-                                className={`conversation-item ${conversation.id === activeConversation?.id ? 'active' : ''}`}
-                                key={conversation.id}
-                                type="button"
-                                onClick={() => void openConversation(conversation.id)}
-                                disabled={busy}
-                            >
-                                <span>{conversation.title}</span>
-                                <small>{conversation.messageCount}개 메시지 · {formatUpdatedAt(conversation.updatedAt)}</small>
-                            </button>
-                        ))}
-                    </div>
+                    {conversationsExpanded && (
+                        <div className="collapsible-content" id="conversation-content">
+                            <input
+                                className="conversation-search"
+                                value={conversationSearch}
+                                onChange={(event) => setConversationSearch(event.target.value)}
+                                placeholder="대화 검색"
+                                type="search"
+                            />
+                            <div className="conversation-list">
+                                {loadingConversations && <p className="conversation-empty">대화 불러오는 중…</p>}
+                                {!loadingConversations && visibleConversations.map((conversation) => (
+                                    <button
+                                        className={`conversation-item ${conversation.id === activeConversation?.id ? 'active' : ''}`}
+                                        key={conversation.id}
+                                        type="button"
+                                        onClick={() => void openConversation(conversation.id)}
+                                        disabled={busy}
+                                    >
+                                        <span>{conversation.title}</span>
+                                        <small>{conversation.messageCount}개 메시지 · {formatUpdatedAt(conversation.updatedAt)}</small>
+                                    </button>
+                                ))}
+                                {!loadingConversations && conversations.length > 0 && visibleConversations.length === 0 && (
+                                    <p className="conversation-empty">검색 결과가 없습니다.</p>
+                                )}
+                            </div>
+                        </div>
+                    )}
                 </section>
 
-                <section className="settings">
+                <section className={`settings ${connectionsExpanded ? '' : 'collapsed'}`} aria-label="연결">
                     <div className="section-heading">
-                        <span>연결</span>
+                        <button
+                            className="section-toggle"
+                            type="button"
+                            onClick={() => setConnectionsExpanded((current) => !current)}
+                            aria-expanded={connectionsExpanded}
+                            aria-controls="connection-content"
+                        >
+                            <span>연결</span>
+                            <span className="section-toggle-indicator" aria-hidden="true">⌄</span>
+                        </button>
                         <span className={`connection-dot ${models.length ? 'online' : ''}`} />
                     </div>
+                    {connectionsExpanded && (
+                        <div className="collapsible-content" id="connection-content">
 
-                    <label>
-                        서버 URL
-                        <input
-                            value={baseURL}
-                            onChange={(event) => setBaseURL(event.target.value)}
-                            placeholder="http://localhost:8000"
-                            spellCheck={false}
-                        />
-                    </label>
+                            <label>
+                                저장된 프로필 <small>API 키 제외</small>
+                                <select
+                                    value={selectedSavedConnectionProfileID}
+                                    onChange={(event) => selectSavedConnectionProfile(event.target.value)}
+                                    disabled={busy || savingConnectionProfile}
+                                >
+                                    <option value="">새 연결 프로필</option>
+                                    {savedConnectionProfiles.map((profile) => (
+                                        <option key={profile.id} value={profile.id}>{profile.name}</option>
+                                    ))}
+                                </select>
+                            </label>
 
-                    <label>
-                        API 키 <small>선택</small>
-                        <input
-                            value={apiKey}
-                            onChange={(event) => setAPIKey(event.target.value)}
-                            placeholder="필요한 경우 입력"
-                            type="password"
-                            autoComplete="off"
-                        />
-                    </label>
+                            <label>
+                                프로필 이름
+                                <input
+                                    value={connectionProfileName}
+                                    onChange={(event) => setConnectionProfileName(event.target.value)}
+                                    placeholder="예: 로컬 vLLM"
+                                    disabled={busy || savingConnectionProfile}
+                                />
+                            </label>
 
-                    <button className="secondary-button" onClick={loadModels} disabled={loadingModels || busy}>
-                        {loadingModels ? '확인 중…' : '모델 불러오기'}
-                    </button>
-                    <p className="connection-message">{connectionMessage}</p>
+                            <label>
+                                서버 URL
+                                <input
+                                    value={baseURL}
+                                    onChange={(event) => updateBaseURL(event.target.value)}
+                                    placeholder="http://localhost:8000"
+                                    spellCheck={false}
+                                />
+                            </label>
 
-                    <label>
-                        <span className="model-select-heading">
-                            <span>모델</span>
-                            {selectedModel && (
-                                <span className="model-token-usage">
-                                    누적 {formatTokenCount(modelTokenUsage[selectedModel]?.totalTokens || 0)} 토큰
-                                </span>
+                            <button
+                                className="profile-save-button"
+                                type="button"
+                                onClick={() => void saveNamedConnectionProfile()}
+                                disabled={busy || savingConnectionProfile || !connectionProfileName.trim()}
+                            >
+                                {savingConnectionProfile ? '저장 중…' : selectedSavedConnectionProfileID ? '프로필 업데이트' : '프로필 저장'}
+                            </button>
+                            {selectedSavedConnectionProfileID && (
+                                <button
+                                    className="profile-delete-button"
+                                    type="button"
+                                    onClick={requestSavedConnectionProfileDelete}
+                                    disabled={busy || savingConnectionProfile}
+                                >
+                                    프로필 삭제
+                                </button>
                             )}
-                        </span>
-                        <select
-                            value={selectedModel}
-                            onChange={(event) => setSelectedModel(event.target.value)}
-                            disabled={!models.length || busy}
-                        >
-                            {!models.length && <option value="">모델을 불러와 주세요</option>}
-                            {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
-                        </select>
-                    </label>
 
+                            <label>
+                                API 키 <small>선택</small>
+                                <input
+                                    value={apiKey}
+                                    onChange={(event) => setAPIKey(event.target.value)}
+                                    placeholder="필요한 경우 입력"
+                                    type="password"
+                                    autoComplete="off"
+                                />
+                            </label>
+
+                            <button className="secondary-button" onClick={loadModels} disabled={loadingModels || busy}>
+                                {loadingModels ? '확인 중…' : '모델 불러오기'}
+                            </button>
+                            <p className="connection-message">{connectionMessage}</p>
+
+                            <label>
+                                <span className="model-select-heading">
+                                    <span>모델</span>
+                                    {selectedModel && (
+                                        <span className="model-token-usage">
+                                            누적 {formatTokenCount(modelTokenUsage[selectedModel]?.totalTokens || 0)} 토큰
+                                        </span>
+                                    )}
+                                </span>
+                                <select
+                                    value={selectedModel}
+                                    onChange={(event) => setSelectedModel(event.target.value)}
+                                    disabled={!models.length || busy}
+                                >
+                                    {!models.length && <option value="">모델을 불러와 주세요</option>}
+                                    {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
+                                </select>
+                            </label>
+
+                            <p className="privacy-note">프로필에는 이름과 서버 URL만 저장됩니다. 모델과 API 키는 저장하지 않으며 앱을 다시 열면 모델을 불러오고 API 키를 다시 입력해야 합니다.</p>
+                        </div>
+                    )}
                 </section>
-
-                <p className="privacy-note">서버 URL만 이 컴퓨터에 저장됩니다. 모델과 API 키는 저장하지 않으며 앱을 다시 열면 모델을 불러오고 API 키를 다시 입력해야 합니다.</p>
             </aside>
 
             <main className="chat-panel" onWheel={handleChatPanelWheel}>
                 <header className="chat-header">
                     <div>
                         <span className="eyebrow">CURRENT CONVERSATION</span>
-                        <strong>{activeConversation?.title || '대화를 선택해 주세요'}</strong>
+                        {renamingConversation ? (
+                            <form className="conversation-title-form" onSubmit={(event) => {
+                                event.preventDefault();
+                                void saveConversationTitle();
+                            }}>
+                                <input
+                                    value={conversationTitleDraft}
+                                    onChange={(event) => setConversationTitleDraft(event.target.value)}
+                                    aria-label="대화 이름"
+                                    autoFocus
+                                />
+                                <button className="text-button" type="submit">저장</button>
+                                <button className="text-button" type="button" onClick={() => setRenamingConversation(false)}>취소</button>
+                            </form>
+                        ) : (
+                            <strong>{activeConversation?.title || '대화를 선택해 주세요'}</strong>
+                        )}
                     </div>
                     <div className="chat-header-actions">
+                        {activeConversation && !busy && !renamingConversation && (
+                            <button className="text-button" type="button" onClick={beginConversationRename}>
+                                이름 변경
+                            </button>
+                        )}
                         {activeConversation && !busy && (
                             <button className="delete-conversation-button" type="button" onClick={requestConversationDelete}>
                                 대화 삭제
@@ -791,7 +1141,7 @@ function App() {
                         </div>
                     ) : (
                         <div className="message-column">
-                            {messages.map((message) => (
+                            {messages.map((message, index) => (
                                 <article className={`message ${message.role}`} key={message.id}>
                                     <span className="message-role">{message.role === 'user' ? '나' : 'AI'}</span>
                                     <div className={`message-content${message.role === 'assistant' ? ' markdown-content' : ''}`}>
@@ -810,6 +1160,18 @@ function App() {
                                                 )}
                                                 {formatGenerationSpeed(message.usage, message.metrics) && (
                                                     <span>{formatGenerationSpeed(message.usage, message.metrics)}</span>
+                                                )}
+                                            </div>
+                                        )}
+                                        {message.content && (
+                                            <div className="message-actions">
+                                                <button className="message-action-button" type="button" onClick={() => void copyMessage(message)}>
+                                                    {copiedMessageID === message.id ? '복사됨' : '복사'}
+                                                </button>
+                                                {message.role === 'assistant' && index === messages.length - 1 && !busy && selectedModel && (
+                                                    <button className="message-action-button" type="button" onClick={() => void regenerateResponse(message.id)}>
+                                                        다시 생성
+                                                    </button>
                                                 )}
                                             </div>
                                         )}
@@ -844,14 +1206,21 @@ function App() {
                             rows={1}
                         />
                         {busy ? (
-                            <button className="stop-button" type="button" onClick={stopGeneration} aria-label="생성 중단">
+                            <button
+                                className="stop-button"
+                                type="button"
+                                onClick={() => void stopGeneration()}
+                                aria-label={cancelling ? '생성 중단 중' : '생성 중단'}
+                                title={cancelling ? '응답을 중단하는 중입니다' : '생성 중단'}
+                                disabled={cancelling}
+                            >
                                 <span />
                             </button>
                         ) : (
                             <button className="send-button" type="submit" disabled={!canSend} aria-label="전송">↑</button>
                         )}
                     </form>
-                    <span className="composer-hint">Enter 전송 · Shift + Enter 줄바꿈</span>
+                    <span className="composer-hint">{cancelling ? '응답을 중단하는 중…' : 'Enter 전송 · Shift + Enter 줄바꿈'}</span>
                     </div>
                 )}
             </main>
@@ -866,6 +1235,22 @@ function App() {
                             </button>
                             <button type="button" className="dialog-delete-button" onClick={() => void confirmConversationDelete()} disabled={deletingConversation}>
                                 {deletingConversation ? '삭제 중…' : '삭제'}
+                            </button>
+                        </div>
+                    </section>
+                </div>
+            )}
+            {connectionProfileToDelete && (
+                <div className="dialog-backdrop" role="presentation">
+                    <section className="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-connection-profile-title">
+                        <h2 id="delete-connection-profile-title">연결 프로필을 삭제할까요?</h2>
+                        <p>“{connectionProfileToDelete.name}” 프로필의 이름과 서버 URL을 삭제합니다. API 키는 저장되지 않았습니다.</p>
+                        <div className="dialog-actions">
+                            <button type="button" className="dialog-cancel-button" onClick={() => setConnectionProfileToDelete(null)} disabled={deletingConnectionProfile}>
+                                취소
+                            </button>
+                            <button type="button" className="dialog-delete-button" onClick={() => void confirmSavedConnectionProfileDelete()} disabled={deletingConnectionProfile}>
+                                {deletingConnectionProfile ? '삭제 중…' : '삭제'}
                             </button>
                         </div>
                     </section>

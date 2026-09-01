@@ -15,7 +15,7 @@
     padding: 32px 24px 24px;
     border-right: 1px solid #e4e4df;
     background: #efefeb;
-    overflow-y: auto;
+    overflow: hidden;
 }
 
 .brand {
@@ -49,16 +49,17 @@
 
 .settings {
     display: flex;
+    flex: 1 1 54%;
     flex-direction: column;
+    min-height: 0;
     gap: 16px;
 }
 
 .conversations {
     display: flex;
-    flex: 1 1 150px;
+    flex: 1 1 46%;
     flex-direction: column;
-    min-height: 118px;
-    max-height: 250px;
+    min-height: 160px;
     gap: 10px;
 }
 
@@ -70,6 +71,67 @@
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.08em;
+}
+
+.section-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: inherit;
+    font-weight: inherit;
+    letter-spacing: inherit;
+}
+
+.section-toggle:hover {
+    color: #30302c;
+}
+
+.section-toggle-indicator {
+    display: inline-block;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+    transition: transform 150ms ease;
+}
+
+.section-toggle[aria-expanded="false"] .section-toggle-indicator {
+    transform: rotate(-90deg);
+}
+
+.collapsible-content {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.conversations > .collapsible-content {
+    flex: 1;
+    gap: 10px;
+}
+
+.settings > .collapsible-content {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.conversations.collapsed {
+    flex: 0 0 auto;
+    min-height: 0;
+    max-height: none;
+}
+
+.settings.collapsed {
+    flex: 0 0 auto;
+    min-height: 0;
+    gap: 0;
 }
 
 .new-conversation-button {
@@ -84,6 +146,12 @@
 
 .new-conversation-button:not(:disabled):hover {
     color: #11110f;
+}
+
+.conversation-search {
+    height: 31px;
+    padding: 0 9px;
+    font-size: 11px;
 }
 
 .conversation-list {
@@ -218,6 +286,37 @@ button:disabled {
     background: #11110f;
 }
 
+.profile-save-button {
+    height: 34px;
+    border: 1px solid #aaa9a1;
+    border-radius: 8px;
+    background: transparent;
+    color: #4c4c46;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 650;
+}
+
+.profile-save-button:not(:disabled):hover {
+    border-color: #75756d;
+    color: #1f1f1c;
+}
+
+.profile-delete-button {
+    align-self: flex-end;
+    margin-top: -8px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: #a35a51;
+    cursor: pointer;
+    font-size: 10px;
+}
+
+.profile-delete-button:not(:disabled):hover {
+    color: #813d35;
+}
+
 .connection-message {
     margin: -8px 1px 0;
     color: #87877f;
@@ -225,7 +324,7 @@ button:disabled {
 }
 
 .privacy-note {
-    margin: auto 0 0;
+    margin: 0;
     color: #96968e;
     font-size: 10px;
     line-height: 1.55;
@@ -262,6 +361,30 @@ button:disabled {
     color: #2b2b27;
     font-size: 13px;
     text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.conversation-title-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: min(520px, 100%);
+    min-width: 0;
+}
+
+.conversation-title-form input {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto;
+    height: 31px;
+    font-weight: 650;
+}
+
+.conversation-title-form .text-button {
+    flex: 0 0 auto;
+    min-width: 38px;
+    height: 31px;
+    padding: 0 8px;
     white-space: nowrap;
 }
 
@@ -742,6 +865,25 @@ button:disabled {
     margin-right: 10px;
     color: #c2c2bb;
     content: '·';
+}
+
+.message-actions {
+    display: flex;
+    gap: 5px;
+    margin-top: 10px;
+}
+
+.message-action-button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: #85857c;
+    cursor: pointer;
+    font-size: 10px;
+}
+
+.message-action-button:not(:disabled):hover {
+    color: #2c2c28;
 }
 
 .typing {

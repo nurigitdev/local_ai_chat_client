@@ -66,11 +66,12 @@ export interface ResponseMetrics {
 }
 
 /**
- * SavedConnectionProfile deliberately contains only the server URL. Models are
- * fetched from that server when the user chooses to load them, and API keys
- * remain in memory only.
+ * SavedConnectionProfile deliberately excludes the API key and model. The API
+ * key exists only in memory, and models are fetched again when a user connects.
  */
 export interface SavedConnectionProfile {
+    "id": string;
+    "name": string;
     "baseURL": string;
 }
 

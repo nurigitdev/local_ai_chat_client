@@ -69,6 +69,7 @@ type App struct {
 	cancels       map[string]context.CancelFunc
 	conversations *conversationStore
 	profiles      *connectionProfileStore
+	eventSink     func(ChatEvent)
 }
 
 func NewApp() *App {
@@ -143,6 +144,18 @@ func (a *App) SaveConnectionProfile(profile SavedConnectionProfile) (SavedConnec
 	return a.profiles.Save(profile)
 }
 
+func (a *App) ListSavedConnectionProfiles() ([]SavedConnectionProfile, error) {
+	return a.profiles.List()
+}
+
+func (a *App) SaveNamedConnectionProfile(profile SavedConnectionProfile) (SavedConnectionProfile, error) {
+	return a.profiles.SaveNamed(profile)
+}
+
+func (a *App) DeleteSavedConnectionProfile(id string) error {
+	return a.profiles.DeleteNamed(id)
+}
+
 func (a *App) StartChat(request ChatRequest) error {
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	request.Model = strings.TrimSpace(request.Model)
@@ -205,6 +218,9 @@ func (a *App) runChat(
 	a.emit(ChatEvent{RequestID: requestID, Type: "started"})
 
 	err := client.StreamChat(ctx, openai.ChatRequest{Model: model, Messages: messages}, func(chunk openai.StreamChunk) {
+		if ctx.Err() != nil {
+			return
+		}
 		if chunk.Delta != "" {
 			if firstTokenAt.IsZero() {
 				firstTokenAt = time.Now()
@@ -220,6 +236,10 @@ func (a *App) runChat(
 		}
 	})
 	metrics := responseMetrics(startedAt, firstTokenAt)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		a.emit(ChatEvent{RequestID: requestID, Type: "cancelled", Metrics: metrics})
+		return
+	}
 	if err == nil {
 		a.emit(ChatEvent{RequestID: requestID, Type: "completed", Metrics: metrics})
 		return
@@ -256,6 +276,10 @@ func (a *App) removeCancel(requestID string) {
 }
 
 func (a *App) emit(event ChatEvent) {
+	if a.eventSink != nil {
+		a.eventSink(event)
+		return
+	}
 	if application.Get() != nil {
 		application.Get().Event.Emit(chatEventName, event)
 	}

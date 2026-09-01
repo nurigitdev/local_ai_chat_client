@@ -21,12 +21,20 @@ export function DeleteConversation(id: string): $CancellablePromise<void> {
     return $Call.ByID(1702807921, id);
 }
 
+export function DeleteSavedConnectionProfile(id: string): $CancellablePromise<void> {
+    return $Call.ByID(4225912054, id);
+}
+
 export function ListConversations(): $CancellablePromise<$models.ConversationSummary[] | null> {
     return $Call.ByID(1664713955);
 }
 
 export function ListModels(profile: $models.ConnectionProfile): $CancellablePromise<$models.Model[] | null> {
     return $Call.ByID(919729239, profile);
+}
+
+export function ListSavedConnectionProfiles(): $CancellablePromise<$models.SavedConnectionProfile[] | null> {
+    return $Call.ByID(2816371074);
 }
 
 export function LoadConnectionProfile(): $CancellablePromise<$models.SavedConnectionProfile> {
@@ -43,6 +51,10 @@ export function SaveConnectionProfile(profile: $models.SavedConnectionProfile): 
 
 export function SaveConversation(conversation: $models.Conversation): $CancellablePromise<$models.Conversation> {
     return $Call.ByID(3192203735, conversation);
+}
+
+export function SaveNamedConnectionProfile(profile: $models.SavedConnectionProfile): $CancellablePromise<$models.SavedConnectionProfile> {
+    return $Call.ByID(3901251290, profile);
 }
 
 export function StartChat(request: $models.ChatRequest): $CancellablePromise<void> {

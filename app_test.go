@@ -2,6 +2,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,5 +160,110 @@ func TestConnectionProfileStoreRejectsURLsThatMayContainCredentials(t *testing.T
 				t.Fatal("Save() accepted an unsafe URL")
 			}
 		})
+	}
+}
+
+func TestConnectionProfileStoreSavesListsAndDeletesNamedProfiles(t *testing.T) {
+	store := newConnectionProfileStore(t.TempDir())
+	first, err := store.SaveNamed(SavedConnectionProfile{
+		Name:    "로컬 vLLM",
+		BaseURL: "http://localhost:8000",
+	})
+	if err != nil {
+		t.Fatalf("SaveNamed() error = %v", err)
+	}
+	if first.ID == "" || first.Name != "로컬 vLLM" {
+		t.Fatalf("SaveNamed() = %#v", first)
+	}
+	second, err := store.SaveNamed(SavedConnectionProfile{
+		Name:    "회사 서버",
+		BaseURL: "https://models.example.com/v1",
+	})
+	if err != nil {
+		t.Fatalf("SaveNamed() error = %v", err)
+	}
+
+	profiles, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("List() = %#v", profiles)
+	}
+
+	updated, err := store.SaveNamed(SavedConnectionProfile{
+		ID:      first.ID,
+		Name:    "내 로컬 서버",
+		BaseURL: "http://127.0.0.1:8000/v1",
+	})
+	if err != nil {
+		t.Fatalf("SaveNamed() update error = %v", err)
+	}
+	if updated.ID != first.ID || updated.Name != "내 로컬 서버" {
+		t.Fatalf("SaveNamed() update = %#v", updated)
+	}
+
+	if err := store.DeleteNamed(second.ID); err != nil {
+		t.Fatalf("DeleteNamed() error = %v", err)
+	}
+	profiles, err = store.List()
+	if err != nil {
+		t.Fatalf("List() after DeleteNamed() error = %v", err)
+	}
+	if len(profiles) != 1 || profiles[0] != updated {
+		t.Fatalf("List() after DeleteNamed() = %#v", profiles)
+	}
+}
+
+func TestChatCancellationEmitsCancelledAfterStreamingStarts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := writer.(http.Flusher)
+		if !ok {
+			t.Error("ResponseWriter does not support flushing")
+			return
+		}
+		_, _ = fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"첫 응답\"}}]}\n\n")
+		flusher.Flush()
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	app := NewApp()
+	events := make(chan ChatEvent, 8)
+	app.eventSink = func(event ChatEvent) {
+		events <- event
+	}
+	if err := app.StartChat(ChatRequest{
+		RequestID: "cancel-test",
+		Profile:   ConnectionProfile{BaseURL: server.URL},
+		Model:     "test-model",
+		Messages:  []ChatMessage{{Role: "user", Content: "취소 테스트"}},
+	}); err != nil {
+		t.Fatalf("StartChat() error = %v", err)
+	}
+
+	cancelled := false
+	timeout := time.NewTimer(3 * time.Second)
+	defer timeout.Stop()
+	for !cancelled {
+		select {
+		case event := <-events:
+			switch event.Type {
+			case "delta":
+				if !app.CancelChat("cancel-test") {
+					t.Fatal("CancelChat() = false, want true")
+				}
+			case "completed":
+				t.Fatal("cancelled stream emitted completed")
+			case "cancelled":
+				if event.Metrics == nil {
+					t.Fatal("cancelled event has no metrics")
+				}
+				cancelled = true
+			}
+		case <-timeout.C:
+			t.Fatal("timed out waiting for cancelled event")
+		}
 	}
 }
