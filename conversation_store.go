@@ -16,19 +16,31 @@ import (
 )
 
 const (
-	newConversationTitle  = "새 대화"
-	conversationDirectory = "conversations"
+	newConversationTitle     = "새 대화"
+	conversationDirectory    = "conversations"
+	maxAttachmentsPerMessage = 4
+	maxAttachmentContentSize = 256 * 1024
+	maxAttachmentTotalSize   = 512 * 1024
 )
 
 var messageMarker = regexp.MustCompile(`(?m)^<!-- agent-chat-message (\{.*\}) -->\r?\n?`)
 
 type ConversationMessage struct {
-	ID      string           `json:"id"`
-	Role    string           `json:"role"`
-	Content string           `json:"content"`
-	Status  string           `json:"status"`
-	Usage   *TokenUsage      `json:"usage,omitempty"`
-	Metrics *ResponseMetrics `json:"metrics,omitempty"`
+	ID          string           `json:"id"`
+	Role        string           `json:"role"`
+	Content     string           `json:"content"`
+	Status      string           `json:"status"`
+	Attachments []ChatAttachment `json:"attachments,omitempty"`
+	Usage       *TokenUsage      `json:"usage,omitempty"`
+	Metrics     *ResponseMetrics `json:"metrics,omitempty"`
+}
+
+// ChatAttachment stores the locally extracted text for an attached text or
+// source-code file. The original file is never copied from its location.
+type ChatAttachment struct {
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	Content string `json:"content"`
 }
 
 type Conversation struct {
@@ -178,6 +190,9 @@ func (s *conversationStore) Save(conversation Conversation) (Conversation, error
 		if message.Role != "user" && message.Role != "assistant" {
 			return Conversation{}, errors.New("올바르지 않은 메시지 역할입니다")
 		}
+		if err := validateAttachments(message.Attachments); err != nil {
+			return Conversation{}, err
+		}
 	}
 
 	conversation.Title = conversationTitle(conversation.Title, conversation.Messages)
@@ -248,13 +263,22 @@ func marshalConversation(conversation Conversation) ([]byte, error) {
 
 	for _, message := range conversation.Messages {
 		marker, err := json.Marshal(struct {
-			ID      string           `json:"id"`
-			Role    string           `json:"role"`
-			Status  string           `json:"status"`
-			Content int              `json:"contentBytes"`
-			Usage   *TokenUsage      `json:"usage,omitempty"`
-			Metrics *ResponseMetrics `json:"metrics,omitempty"`
-		}{ID: message.ID, Role: message.Role, Status: message.Status, Content: len([]byte(message.Content)), Usage: message.Usage, Metrics: message.Metrics})
+			ID          string           `json:"id"`
+			Role        string           `json:"role"`
+			Status      string           `json:"status"`
+			Content     int              `json:"contentBytes"`
+			Attachments []ChatAttachment `json:"attachments,omitempty"`
+			Usage       *TokenUsage      `json:"usage,omitempty"`
+			Metrics     *ResponseMetrics `json:"metrics,omitempty"`
+		}{
+			ID:          message.ID,
+			Role:        message.Role,
+			Status:      message.Status,
+			Content:     len([]byte(message.Content)),
+			Attachments: message.Attachments,
+			Usage:       message.Usage,
+			Metrics:     message.Metrics,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("메시지 정보를 저장할 수 없습니다: %w", err)
 		}
@@ -300,18 +324,22 @@ func parseConversation(contents []byte) (Conversation, error) {
 	messages := make([]ConversationMessage, 0, len(matches))
 	for index, match := range matches {
 		var metadata struct {
-			ID      string           `json:"id"`
-			Role    string           `json:"role"`
-			Status  string           `json:"status"`
-			Content *int             `json:"contentBytes"`
-			Usage   *TokenUsage      `json:"usage,omitempty"`
-			Metrics *ResponseMetrics `json:"metrics,omitempty"`
+			ID          string           `json:"id"`
+			Role        string           `json:"role"`
+			Status      string           `json:"status"`
+			Content     *int             `json:"contentBytes"`
+			Attachments []ChatAttachment `json:"attachments,omitempty"`
+			Usage       *TokenUsage      `json:"usage,omitempty"`
+			Metrics     *ResponseMetrics `json:"metrics,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(body[match[2]:match[3]]), &metadata); err != nil {
 			return Conversation{}, errors.New("메시지 정보가 올바르지 않습니다")
 		}
 		if !isSafeConversationID(metadata.ID) || (metadata.Role != "user" && metadata.Role != "assistant") {
 			return Conversation{}, errors.New("메시지 정보가 올바르지 않습니다")
+		}
+		if err := validateAttachments(metadata.Attachments); err != nil {
+			return Conversation{}, errors.New("첨부 파일 정보가 올바르지 않습니다")
 		}
 		contentEnd := len(body)
 		if index+1 < len(matches) {
@@ -326,7 +354,8 @@ func parseConversation(contents []byte) (Conversation, error) {
 			content = strings.TrimRight(body[contentStart:contentEnd], "\n")
 		}
 		messages = append(messages, ConversationMessage{
-			ID: metadata.ID, Role: metadata.Role, Status: metadata.Status, Content: content, Usage: metadata.Usage, Metrics: metadata.Metrics,
+			ID: metadata.ID, Role: metadata.Role, Status: metadata.Status, Content: content,
+			Attachments: metadata.Attachments, Usage: metadata.Usage, Metrics: metadata.Metrics,
 		})
 	}
 
@@ -343,8 +372,36 @@ func conversationTitle(current string, messages []ConversationMessage) string {
 		if message.Role == "user" && strings.TrimSpace(message.Content) != "" {
 			return truncateTitle(strings.TrimSpace(message.Content))
 		}
+		if message.Role == "user" && len(message.Attachments) > 0 {
+			return truncateTitle("첨부 파일: " + message.Attachments[0].Name)
+		}
 	}
 	return newConversationTitle
+}
+
+func validateAttachments(attachments []ChatAttachment) error {
+	if len(attachments) > maxAttachmentsPerMessage {
+		return fmt.Errorf("첨부 파일은 메시지당 최대 %d개까지 가능합니다", maxAttachmentsPerMessage)
+	}
+
+	totalSize := 0
+	for _, attachment := range attachments {
+		name := strings.TrimSpace(attachment.Name)
+		if name == "" || len([]rune(name)) > 160 {
+			return errors.New("첨부 파일 이름이 올바르지 않습니다")
+		}
+		if attachment.Size < 0 || attachment.Size > maxAttachmentContentSize || len([]byte(attachment.Content)) > maxAttachmentContentSize {
+			return errors.New("첨부 파일 크기가 허용 범위를 벗어났습니다")
+		}
+		if strings.IndexByte(attachment.Content, 0) >= 0 {
+			return errors.New("텍스트 파일만 첨부할 수 있습니다")
+		}
+		totalSize += len([]byte(attachment.Content))
+	}
+	if totalSize > maxAttachmentTotalSize {
+		return errors.New("첨부 파일 전체 크기가 허용 범위를 벗어났습니다")
+	}
+	return nil
 }
 
 func truncateTitle(title string) string {

@@ -1,10 +1,11 @@
-import {FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState, WheelEvent} from 'react';
+import {ChangeEvent, FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState, WheelEvent} from 'react';
 import {Events} from '@wailsio/runtime';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {App as ChatService} from '../bindings/github.com/taengson/agent-chat-desktop';
 import type {
     ChatEvent,
+    ChatAttachment,
     ChatRequest,
     Conversation,
     ConversationMessage,
@@ -24,6 +25,7 @@ interface UIMessage {
     role: Role;
     content: string;
     status: MessageStatus;
+    attachments: ChatAttachment[];
     usage?: TokenUsage;
     metrics?: ResponseMetrics;
 }
@@ -40,6 +42,17 @@ interface ModelTokenUsage {
 }
 
 const defaultBaseURL = 'http://localhost:8000';
+const attachmentFileExtensions = new Set([
+    'txt', 'md', 'csv', 'json', 'jsonl', 'xml', 'yaml', 'yml', 'toml', 'ini', 'log',
+    'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'go', 'py', 'java', 'kt', 'kts', 'rb',
+    'php', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'cs', 'rs', 'swift', 'sh', 'zsh',
+    'sql', 'html', 'css', 'scss', 'less', 'vue', 'svelte', 'graphql', 'gql',
+]);
+const attachmentAccept = Array.from(attachmentFileExtensions, (extension) => `.${extension}`).join(',');
+const maxAttachmentsPerMessage = 4;
+const maxAttachmentFileSize = 256 * 1024;
+const maxAttachmentTextSize = 120_000;
+const maxAttachmentTotalSize = 512 * 1024;
 const emptyBenchmarkSidebar: ModelBenchmarkSidebarState = {
     model: '',
     profileName: '',
@@ -73,13 +86,43 @@ function toUIMessage(message: ConversationMessage): UIMessage {
         status: ['complete', 'streaming', 'cancelled', 'failed'].includes(message.status)
             ? message.status as MessageStatus
             : 'complete',
+        attachments: message.attachments || [],
         usage: message.usage ?? undefined,
         metrics: message.metrics ?? undefined,
     };
 }
 
 function toStoredMessages(messages: UIMessage[]): ConversationMessage[] {
-    return messages.map(({id, role, content, status, usage, metrics}) => ({id, role, content, status, usage, metrics}));
+    return messages.map(({id, role, content, status, attachments, usage, metrics}) => ({
+        id,
+        role,
+        content,
+        status,
+        attachments,
+        usage,
+        metrics,
+    }));
+}
+
+function attachmentFileName(fileName: string): string {
+    return fileName.trim() || '이름 없는 파일';
+}
+
+function attachmentExtension(fileName: string): string {
+    const extension = fileName.split('.').pop();
+    return extension && extension !== fileName ? extension.toLocaleLowerCase('en-US') : '';
+}
+
+function formatFileSize(bytes: number): string {
+    if (bytes < 1_024) return `${bytes}B`;
+    return `${new Intl.NumberFormat('ko-KR', {maximumFractionDigits: 0}).format(bytes / 1_024)}KB`;
+}
+
+function messageContentForModel(message: UIMessage): string {
+    const attachmentContent = message.attachments.map((attachment) => (
+        `[첨부 파일: ${attachment.name}]\n${attachment.content}\n[첨부 파일 끝]`
+    ));
+    return [message.content.trim(), ...attachmentContent].filter(Boolean).join('\n\n');
 }
 
 function summaryFromConversation(conversation: Conversation): ConversationSummary {
@@ -257,6 +300,7 @@ function App() {
     const [conversationTitleDraft, setConversationTitleDraft] = useState('');
     const [messages, setMessages] = useState<UIMessage[]>([]);
     const [input, setInput] = useState('');
+    const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
     const [busy, setBusy] = useState(false);
     const [cancelling, setCancelling] = useState(false);
     const [copiedMessageID, setCopiedMessageID] = useState<string | null>(null);
@@ -279,6 +323,7 @@ function App() {
     const cancelRequestedRef = useRef(false);
     const stopFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const copiedMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const attachmentInputRef = useRef<HTMLInputElement | null>(null);
 
     const handleBenchmarkBusyChange = useCallback((nextBusy: boolean) => {
         setBenchmarkBusy(nextBusy);
@@ -302,6 +347,10 @@ function App() {
         setActiveConversation(conversation);
         setRenamingConversation(false);
         setConversationTitleDraft('');
+        setAttachments([]);
+        if (attachmentInputRef.current) {
+            attachmentInputRef.current.value = '';
+        }
         replaceMessages((conversation.messages || []).map(toUIMessage));
         shouldAutoScrollRef.current = true;
         setCanScrollUp(false);
@@ -394,6 +443,10 @@ function App() {
                 replaceMessages([]);
             }
             setInput('');
+            setAttachments([]);
+            if (attachmentInputRef.current) {
+                attachmentInputRef.current.value = '';
+            }
             shouldAutoScrollRef.current = true;
             setCanScrollUp(false);
             setShowScrollToLatest(false);
@@ -702,8 +755,8 @@ function App() {
     }, [conversationSearch, conversations]);
 
     const canSend = useMemo(
-        () => input.trim() !== '' && selectedModel !== '' && activeConversation !== null && !busy,
-        [input, selectedModel, activeConversation, busy],
+        () => (input.trim() !== '' || attachments.length > 0) && selectedModel !== '' && activeConversation !== null && !busy,
+        [input, attachments, selectedModel, activeConversation, busy],
     );
 
     function finishRequest(assistantID: string, status: MessageStatus, metrics?: ResponseMetrics | null) {
@@ -835,8 +888,8 @@ function App() {
                 profile: {baseURL, apiKey},
                 model: selectedModel,
                 messages: requestMessages
-                    .filter((message) => message.role === 'user' || message.content !== '')
-                    .map(({role, content}) => ({role, content})),
+                    .map((message) => ({role: message.role, content: messageContentForModel(message)}))
+                    .filter((message) => message.role === 'user' || message.content !== ''),
             };
             await ChatService.StartChat(request);
         } catch (reason) {
@@ -849,15 +902,65 @@ function App() {
         event?.preventDefault();
         const text = input.trim();
         const conversation = activeConversationRef.current;
-        if (!text || !selectedModel || busy || !conversation) {
+        if ((!text && attachments.length === 0) || !selectedModel || busy || !conversation) {
             return;
         }
 
-        const userMessage: UIMessage = {id: makeID(), role: 'user', content: text, status: 'complete'};
-        const assistantMessage: UIMessage = {id: makeID(), role: 'assistant', content: '', status: 'streaming'};
+        const userMessage: UIMessage = {id: makeID(), role: 'user', content: text, status: 'complete', attachments};
+        const assistantMessage: UIMessage = {id: makeID(), role: 'assistant', content: '', status: 'streaming', attachments: []};
         const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
         setInput('');
+        setAttachments([]);
+        if (attachmentInputRef.current) {
+            attachmentInputRef.current.value = '';
+        }
         await beginAssistantResponse(conversation, assistantMessage, nextMessages, nextMessages);
+    }
+
+    async function addAttachments(event: ChangeEvent<HTMLInputElement>) {
+        const files = Array.from(event.target.files || []);
+        event.target.value = '';
+        if (files.length === 0) return;
+        if (attachments.length + files.length > maxAttachmentsPerMessage) {
+            setError(`파일은 한 메시지에 최대 ${maxAttachmentsPerMessage}개까지 첨부할 수 있습니다.`);
+            return;
+        }
+
+        try {
+            const nextAttachments = await Promise.all(files.map(async (file): Promise<ChatAttachment> => {
+                const name = attachmentFileName(file.name);
+                if (!attachmentFileExtensions.has(attachmentExtension(name))) {
+                    throw new Error(`“${name}”은 아직 지원하지 않는 파일 형식입니다.`);
+                }
+                if (file.size > maxAttachmentFileSize) {
+                    throw new Error(`“${name}”은 파일당 ${formatFileSize(maxAttachmentFileSize)}까지 첨부할 수 있습니다.`);
+                }
+
+                const content = await file.text();
+                if (content.includes('\0')) {
+                    throw new Error(`“${name}”은 텍스트 파일로 읽을 수 없습니다.`);
+                }
+                if (content.length > maxAttachmentTextSize) {
+                    throw new Error(`“${name}”의 텍스트 내용이 너무 깁니다.`);
+                }
+                return {name, size: file.size, content};
+            }));
+            const currentSize = attachments.reduce((total, attachment) => total + attachment.size, 0);
+            const nextSize = nextAttachments.reduce((total, attachment) => total + attachment.size, currentSize);
+            if (nextSize > maxAttachmentTotalSize) {
+                setError(`첨부 파일의 전체 크기는 ${formatFileSize(maxAttachmentTotalSize)}까지 보낼 수 있습니다.`);
+                return;
+            }
+
+            setAttachments((current) => [...current, ...nextAttachments]);
+            setError('');
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : String(reason));
+        }
+    }
+
+    function removeAttachment(index: number) {
+        setAttachments((current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
     }
 
     async function regenerateResponse(messageID: string) {
@@ -873,7 +976,7 @@ function App() {
             return;
         }
 
-        const assistantMessage: UIMessage = {id: messageID, role: 'assistant', content: '', status: 'streaming'};
+        const assistantMessage: UIMessage = {id: messageID, role: 'assistant', content: '', status: 'streaming', attachments: []};
         await beginAssistantResponse(conversation, assistantMessage, [...previousMessages, assistantMessage], previousMessages);
     }
 
@@ -1241,6 +1344,15 @@ function App() {
                                 <article className={`message ${message.role}`} key={message.id}>
                                     <span className="message-role">{message.role === 'user' ? '나' : 'AI'}</span>
                                     <div className={`message-content${message.role === 'assistant' ? ' markdown-content' : ''}`}>
+                                        {message.attachments.length > 0 && (
+                                            <div className="message-attachments" aria-label="첨부 파일">
+                                                {message.attachments.map((attachment, attachmentIndex) => (
+                                                    <span key={`${attachment.name}-${attachmentIndex}`}>
+                                                        {attachment.name} · {formatFileSize(attachment.size)}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        )}
                                         {message.content ? (
                                             message.role === 'assistant' ? (
                                                 <AssistantMessageContent content={message.content}/>
@@ -1293,14 +1405,52 @@ function App() {
                     <div className="composer-area">
                     {error && <div className="error-banner" role="alert">{error}</div>}
                     <form className="composer" onSubmit={sendMessage}>
-                        <textarea
-                            value={input}
-                            onChange={(event) => setInput(event.target.value)}
-                            onKeyDown={handleComposerKeyDown}
-                            placeholder={!activeConversation ? '대화를 선택하거나 새로 시작해 주세요' : selectedModel ? '메시지를 입력하세요' : '먼저 모델을 연결해 주세요'}
-                            disabled={!activeConversation || !selectedModel || busy}
-                            rows={1}
+                        <input
+                            ref={attachmentInputRef}
+                            className="attachment-file-input"
+                            type="file"
+                            accept={attachmentAccept}
+                            multiple
+                            onChange={(event) => void addAttachments(event)}
                         />
+                        <button
+                            className="attachment-add-button"
+                            type="button"
+                            onClick={() => attachmentInputRef.current?.click()}
+                            disabled={!activeConversation || !selectedModel || busy || attachments.length >= maxAttachmentsPerMessage}
+                            aria-label="텍스트 또는 코드 파일 첨부"
+                            title="텍스트 또는 코드 파일 첨부"
+                        >
+                            파일
+                        </button>
+                        <div className="composer-input">
+                            {attachments.length > 0 && (
+                                <div className="composer-attachments" aria-label="첨부할 파일">
+                                    {attachments.map((attachment, index) => (
+                                        <span key={`${attachment.name}-${index}`}>
+                                            <strong>{attachment.name}</strong>
+                                            <small>{formatFileSize(attachment.size)}</small>
+                                            <button
+                                                type="button"
+                                                onClick={() => removeAttachment(index)}
+                                                disabled={busy}
+                                                aria-label={`${attachment.name} 첨부 취소`}
+                                            >
+                                                ×
+                                            </button>
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
+                            <textarea
+                                value={input}
+                                onChange={(event) => setInput(event.target.value)}
+                                onKeyDown={handleComposerKeyDown}
+                                placeholder={!activeConversation ? '대화를 선택하거나 새로 시작해 주세요' : selectedModel ? '메시지를 입력하세요' : '먼저 모델을 연결해 주세요'}
+                                disabled={!activeConversation || !selectedModel || busy}
+                                rows={1}
+                            />
+                        </div>
                         {busy ? (
                             <button
                                 className="stop-button"
@@ -1316,7 +1466,7 @@ function App() {
                             <button className="send-button" type="submit" disabled={!canSend} aria-label="전송">↑</button>
                         )}
                     </form>
-                    <span className="composer-hint">{cancelling ? '응답을 중단하는 중…' : 'Enter 전송 · Shift + Enter 줄바꿈'}</span>
+                    <span className="composer-hint">{cancelling ? '응답을 중단하는 중…' : '텍스트·코드 파일 최대 4개 · 첨부 내용은 연결된 서버로 전송됩니다 · Enter 전송'}</span>
                     </div>
                 )}
             </main>

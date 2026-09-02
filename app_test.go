@@ -52,7 +52,15 @@ func TestConversationStoreCreatesSavesAndOpensMarkdownConversation(t *testing.T)
 	}
 
 	conversation.Messages = []ConversationMessage{
-		{ID: "user-1", Role: "user", Content: "Markdown으로 저장해도 될까?", Status: "complete"},
+		{
+			ID:      "user-1",
+			Role:    "user",
+			Content: "Markdown으로 저장해도 될까?",
+			Status:  "complete",
+			Attachments: []ChatAttachment{{
+				Name: "example.ts", Size: 42, Content: "export const answer = 42;",
+			}},
+		},
 		{
 			ID: "assistant-1", Role: "assistant", Content: "\n네, 가능합니다.\n", Status: "complete",
 			Usage:   &TokenUsage{PromptTokens: 21, CompletionTokens: 8, TotalTokens: 29},
@@ -84,6 +92,9 @@ func TestConversationStoreCreatesSavesAndOpensMarkdownConversation(t *testing.T)
 	}
 	if opened.Messages[0].Content != conversation.Messages[0].Content || opened.Messages[1].Content != conversation.Messages[1].Content {
 		t.Fatalf("Open() messages = %#v", opened.Messages)
+	}
+	if len(opened.Messages[0].Attachments) != 1 || opened.Messages[0].Attachments[0] != conversation.Messages[0].Attachments[0] {
+		t.Fatalf("Open() attachments = %#v", opened.Messages[0].Attachments)
 	}
 	if opened.Messages[1].Usage == nil || *opened.Messages[1].Usage != (TokenUsage{PromptTokens: 21, CompletionTokens: 8, TotalTokens: 29}) {
 		t.Fatalf("Open() usage = %#v", opened.Messages[1].Usage)
