@@ -56,6 +56,44 @@ export interface Model {
     "ownedBy"?: string;
 }
 
+export interface ModelBenchmark {
+    "id": string;
+    "profileID": string;
+    "profileName": string;
+    "profileBaseURL": string;
+    "model": string;
+    "suiteName": string;
+    "status": string;
+    "createdAt": string;
+    "updatedAt": string;
+    "cases": ModelBenchmarkCase[] | null;
+}
+
+export interface ModelBenchmarkCase {
+    "id": string;
+    "category": string;
+    "title": string;
+    "prompt": string;
+    "content": string;
+    "status": string;
+    "usage"?: TokenUsage | null;
+    "metrics"?: ResponseMetrics | null;
+    "error"?: string;
+}
+
+export interface ModelBenchmarkSummary {
+    "id": string;
+    "suiteName": string;
+    "model": string;
+    "status": string;
+    "updatedAt": string;
+    "caseCount": number;
+    "completedCaseCount": number;
+    "averageTotalDurationMs": number;
+    "averageFirstTokenDurationMs": number;
+    "averageGenerationSpeed": number;
+}
+
 /**
  * ResponseMetrics is measured locally for each streaming response. The first
  * token duration is zero when a server finishes without emitting text.

@@ -1,4 +1,4 @@
-import {FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState, WheelEvent} from 'react';
+import {FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState, WheelEvent} from 'react';
 import {Events} from '@wailsio/runtime';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -13,6 +13,7 @@ import type {
     SavedConnectionProfile,
     TokenUsage,
 } from '../bindings/github.com/taengson/agent-chat-desktop/models';
+import ModelBenchmarkWorkspace, {type ModelBenchmarkSidebarState} from './ModelBenchmark';
 import './App.css';
 
 type Role = 'user' | 'assistant';
@@ -39,6 +40,15 @@ interface ModelTokenUsage {
 }
 
 const defaultBaseURL = 'http://localhost:8000';
+const emptyBenchmarkSidebar: ModelBenchmarkSidebarState = {
+    model: '',
+    profileName: '',
+    status: 'idle',
+    completedCaseCount: 0,
+    caseCount: 0,
+    recent: [],
+    isHistoryLoading: false,
+};
 
 function makeID(): string {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -217,6 +227,10 @@ function AssistantMessageContent({content}: {content: string}) {
 }
 
 function App() {
+    const [workspace, setWorkspace] = useState<'chat' | 'benchmark'>('chat');
+    const [benchmarkBusy, setBenchmarkBusy] = useState(false);
+    const [benchmarkSidebar, setBenchmarkSidebar] = useState<ModelBenchmarkSidebarState>(emptyBenchmarkSidebar);
+    const [benchmarkOpenRequestID, setBenchmarkOpenRequestID] = useState<string | null>(null);
     const [baseURL, setBaseURL] = useState(defaultBaseURL);
     const [apiKey, setAPIKey] = useState('');
     const [models, setModels] = useState<ModelOption[]>([]);
@@ -265,6 +279,18 @@ function App() {
     const cancelRequestedRef = useRef(false);
     const stopFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const copiedMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const handleBenchmarkBusyChange = useCallback((nextBusy: boolean) => {
+        setBenchmarkBusy(nextBusy);
+    }, []);
+
+    const handleBenchmarkSidebarChange = useCallback((nextState: ModelBenchmarkSidebarState) => {
+        setBenchmarkSidebar(nextState);
+    }, []);
+
+    const handleBenchmarkOpenRequestHandled = useCallback(() => {
+        setBenchmarkOpenRequestID(null);
+    }, []);
 
     function replaceMessages(nextMessages: UIMessage[]) {
         messagesRef.current = nextMessages;
@@ -931,6 +957,27 @@ function App() {
                     </div>
                 </div>
 
+                <nav className="workspace-switch" aria-label="작업 공간">
+                    <button
+                        className={workspace === 'chat' ? 'active' : ''}
+                        type="button"
+                        onClick={() => setWorkspace('chat')}
+                        disabled={busy || benchmarkBusy}
+                    >
+                        채팅
+                    </button>
+                    <button
+                        className={workspace === 'benchmark' ? 'active' : ''}
+                        type="button"
+                        onClick={() => setWorkspace('benchmark')}
+                        disabled={busy || benchmarkBusy}
+                    >
+                        모델 실험실
+                    </button>
+                </nav>
+
+                {workspace === 'chat' ? (
+                    <>
                 <section className={`conversations ${conversationsExpanded ? '' : 'collapsed'}`} aria-label="대화">
                     <div className="section-heading">
                         <button
@@ -1087,8 +1134,55 @@ function App() {
                         </div>
                     )}
                 </section>
+                    </>
+                ) : (
+                    <section className="benchmark-sidebar">
+                        <div className="section-heading"><span>모델 실험실</span></div>
+                        {benchmarkSidebar.model ? (
+                            <section className="benchmark-sidebar-current">
+                                <span className={benchmarkSidebar.status}>실행 중</span>
+                                <strong>{benchmarkSidebar.model}</strong>
+                                <small>{benchmarkSidebar.profileName} · {benchmarkSidebar.completedCaseCount}/{benchmarkSidebar.caseCount}개 완료</small>
+                            </section>
+                        ) : (
+                            <p>저장된 프로필에서 모델 하나를 선택해 편집 가능한 4개 테스트를 순차 실행합니다.</p>
+                        )}
+                        <section className="benchmark-sidebar-history" aria-label="최근 벤치마크">
+                            <span>최근 벤치마크</span>
+                            <div className="benchmark-sidebar-history-list">
+                                {benchmarkSidebar.isHistoryLoading && <small>기록을 불러오는 중…</small>}
+                                {!benchmarkSidebar.isHistoryLoading && benchmarkSidebar.recent.length === 0 && <small>아직 저장된 벤치마크가 없습니다.</small>}
+                                {benchmarkSidebar.recent.map((item) => (
+                                    <button
+                                        className="benchmark-sidebar-history-item"
+                                        key={item.id}
+                                        type="button"
+                                        disabled={benchmarkBusy}
+                                        onClick={() => setBenchmarkOpenRequestID(item.id)}
+                                    >
+                                        <strong>{item.model}</strong>
+                                        <span>{item.suiteName}</span>
+                                        <small>{item.completedCaseCount}/{item.caseCount}개 완료 · {formatUpdatedAt(item.updatedAt)}</small>
+                                    </button>
+                                ))}
+                            </div>
+                        </section>
+                        <small>저장된 프로필 {savedConnectionProfiles.length}개</small>
+                    </section>
+                )}
             </aside>
 
+            {workspace === 'benchmark' ? (
+                <main className="benchmark-panel">
+                    <ModelBenchmarkWorkspace
+                        profiles={savedConnectionProfiles}
+                        onBusyChange={handleBenchmarkBusyChange}
+                        onSidebarChange={handleBenchmarkSidebarChange}
+                        openBenchmarkID={benchmarkOpenRequestID}
+                        onOpenBenchmarkHandled={handleBenchmarkOpenRequestHandled}
+                    />
+                </main>
+            ) : (
             <main className="chat-panel" onWheel={handleChatPanelWheel}>
                 <header className="chat-header">
                     <div>
@@ -1226,6 +1320,7 @@ function App() {
                     </div>
                 )}
             </main>
+            )}
             {conversationToDelete && (
                 <div className="dialog-backdrop" role="presentation">
                     <section className="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-conversation-title">

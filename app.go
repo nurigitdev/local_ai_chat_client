@@ -69,6 +69,7 @@ type App struct {
 	cancels       map[string]context.CancelFunc
 	conversations *conversationStore
 	profiles      *connectionProfileStore
+	benchmarks    *modelBenchmarkStore
 	eventSink     func(ChatEvent)
 }
 
@@ -77,6 +78,7 @@ func NewApp() *App {
 		cancels:       make(map[string]context.CancelFunc),
 		conversations: newConversationStore(""),
 		profiles:      newConnectionProfileStore(""),
+		benchmarks:    newModelBenchmarkStore(""),
 	}
 }
 
@@ -154,6 +156,22 @@ func (a *App) SaveNamedConnectionProfile(profile SavedConnectionProfile) (SavedC
 
 func (a *App) DeleteSavedConnectionProfile(id string) error {
 	return a.profiles.DeleteNamed(id)
+}
+
+func (a *App) CreateModelBenchmark(benchmark ModelBenchmark) (ModelBenchmark, error) {
+	return a.benchmarks.Create(benchmark)
+}
+
+func (a *App) SaveModelBenchmark(benchmark ModelBenchmark) (ModelBenchmark, error) {
+	return a.benchmarks.Save(benchmark)
+}
+
+func (a *App) ListModelBenchmarks() ([]ModelBenchmarkSummary, error) {
+	return a.benchmarks.List()
+}
+
+func (a *App) OpenModelBenchmark(id string) (ModelBenchmark, error) {
+	return a.benchmarks.Open(id)
 }
 
 func (a *App) StartChat(request ChatRequest) error {

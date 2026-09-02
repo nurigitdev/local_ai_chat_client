@@ -17,6 +17,10 @@ export function CreateConversation(): $CancellablePromise<$models.Conversation> 
     return $Call.ByID(1021935206);
 }
 
+export function CreateModelBenchmark(benchmark: $models.ModelBenchmark): $CancellablePromise<$models.ModelBenchmark> {
+    return $Call.ByID(1784962657, benchmark);
+}
+
 export function DeleteConversation(id: string): $CancellablePromise<void> {
     return $Call.ByID(1702807921, id);
 }
@@ -27,6 +31,10 @@ export function DeleteSavedConnectionProfile(id: string): $CancellablePromise<vo
 
 export function ListConversations(): $CancellablePromise<$models.ConversationSummary[] | null> {
     return $Call.ByID(1664713955);
+}
+
+export function ListModelBenchmarks(): $CancellablePromise<$models.ModelBenchmarkSummary[] | null> {
+    return $Call.ByID(86776914);
 }
 
 export function ListModels(profile: $models.ConnectionProfile): $CancellablePromise<$models.Model[] | null> {
@@ -45,12 +53,20 @@ export function OpenConversation(id: string): $CancellablePromise<$models.Conver
     return $Call.ByID(3465756378, id);
 }
 
+export function OpenModelBenchmark(id: string): $CancellablePromise<$models.ModelBenchmark> {
+    return $Call.ByID(2364498477, id);
+}
+
 export function SaveConnectionProfile(profile: $models.SavedConnectionProfile): $CancellablePromise<$models.SavedConnectionProfile> {
     return $Call.ByID(3622685069, profile);
 }
 
 export function SaveConversation(conversation: $models.Conversation): $CancellablePromise<$models.Conversation> {
     return $Call.ByID(3192203735, conversation);
+}
+
+export function SaveModelBenchmark(benchmark: $models.ModelBenchmark): $CancellablePromise<$models.ModelBenchmark> {
+    return $Call.ByID(3578344020, benchmark);
 }
 
 export function SaveNamedConnectionProfile(profile: $models.SavedConnectionProfile): $CancellablePromise<$models.SavedConnectionProfile> {

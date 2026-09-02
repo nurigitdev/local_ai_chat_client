@@ -15,6 +15,9 @@ export type {
     ConversationMessage,
     ConversationSummary,
     Model,
+    ModelBenchmark,
+    ModelBenchmarkCase,
+    ModelBenchmarkSummary,
     ResponseMetrics,
     SavedConnectionProfile,
     TokenUsage

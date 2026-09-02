@@ -267,3 +267,57 @@ func TestChatCancellationEmitsCancelledAfterStreamingStarts(t *testing.T) {
 		}
 	}
 }
+
+func TestModelBenchmarkStoreCreatesSavesAndOpensBenchmark(t *testing.T) {
+	store := newModelBenchmarkStore(t.TempDir())
+	benchmark, err := store.Create(ModelBenchmark{
+		ProfileID:      "profile-1",
+		ProfileName:    "로컬 vLLM",
+		ProfileBaseURL: "http://localhost:8000",
+		Model:          "model-a",
+		SuiteName:      "기본 실용 벤치마크",
+		Status:         "running",
+		Cases: []ModelBenchmarkCase{
+			{ID: "case-1", Category: "지시 이행", Title: "구조화된 출력", Prompt: "JSON 배열만 출력", Status: "pending"},
+			{ID: "case-2", Category: "추론", Title: "제약 조건", Prompt: "가능한 순서를 제시", Status: "pending"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if benchmark.ID == "" || benchmark.CreatedAt == "" {
+		t.Fatalf("Create() = %#v", benchmark)
+	}
+
+	benchmark.Status = "completed"
+	benchmark.Cases[0] = ModelBenchmarkCase{
+		ID: "case-1", Category: "지시 이행", Title: "구조화된 출력", Prompt: "JSON 배열만 출력", Content: "첫 번째 응답", Status: "complete",
+		Usage:   &TokenUsage{PromptTokens: 10, CompletionTokens: 4, TotalTokens: 14},
+		Metrics: &ResponseMetrics{TotalDurationMs: 1_200, FirstTokenDurationMs: 180},
+	}
+	benchmark.Cases[1] = ModelBenchmarkCase{
+		ID: "case-2", Category: "추론", Title: "제약 조건", Prompt: "가능한 순서를 제시", Content: "두 번째 응답", Status: "complete",
+		Usage:   &TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		Metrics: &ResponseMetrics{TotalDurationMs: 1_500, FirstTokenDurationMs: 220},
+	}
+	saved, err := store.Save(benchmark)
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	opened, err := store.Open(saved.ID)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if opened.Model != "model-a" || len(opened.Cases) != 2 || opened.Cases[0].Content != "첫 번째 응답" {
+		t.Fatalf("Open() = %#v", opened)
+	}
+
+	summaries, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].Model != "model-a" || summaries[0].CaseCount != 2 || summaries[0].CompletedCaseCount != 2 {
+		t.Fatalf("List() = %#v", summaries)
+	}
+}
