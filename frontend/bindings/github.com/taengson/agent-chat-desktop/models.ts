@@ -98,6 +98,8 @@ export interface ModelBenchmarkSummary {
     "id": string;
     "suiteName": string;
     "model": string;
+    "profileName": string;
+    "profileBaseURL": string;
     "status": string;
     "updatedAt": string;
     "caseCount": number;

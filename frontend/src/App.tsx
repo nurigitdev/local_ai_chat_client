@@ -11,6 +11,7 @@ import type {
     Conversation,
     ConversationMessage,
     ConversationSummary,
+    ModelBenchmarkSummary,
     ResponseMetrics,
     SavedConnectionProfile,
     TokenUsage,
@@ -60,6 +61,7 @@ const attachmentExcerptMarker = '\n\n[문서가 길어 앞부분과 뒷부분만
 const emptyBenchmarkSidebar: ModelBenchmarkSidebarState = {
     model: '',
     profileName: '',
+    profileBaseURL: '',
     status: 'idle',
     completedCaseCount: 0,
     caseCount: 0,
@@ -400,6 +402,10 @@ function App() {
     const [benchmarkBusy, setBenchmarkBusy] = useState(false);
     const [benchmarkSidebar, setBenchmarkSidebar] = useState<ModelBenchmarkSidebarState>(emptyBenchmarkSidebar);
     const [benchmarkOpenRequestID, setBenchmarkOpenRequestID] = useState<string | null>(null);
+    const [benchmarkHistoryRefreshKey, setBenchmarkHistoryRefreshKey] = useState(0);
+    const [benchmarkToDelete, setBenchmarkToDelete] = useState<ModelBenchmarkSummary | null>(null);
+    const [deletingBenchmark, setDeletingBenchmark] = useState(false);
+    const [benchmarkDeleteError, setBenchmarkDeleteError] = useState('');
     const [baseURL, setBaseURL] = useState(defaultBaseURL);
     const [apiKey, setAPIKey] = useState('');
     const [models, setModels] = useState<ModelOption[]>([]);
@@ -462,6 +468,33 @@ function App() {
     const handleBenchmarkOpenRequestHandled = useCallback(() => {
         setBenchmarkOpenRequestID(null);
     }, []);
+
+    function requestBenchmarkDelete(summary: ModelBenchmarkSummary) {
+        if (benchmarkBusy) return;
+        setBenchmarkDeleteError('');
+        setBenchmarkToDelete(summary);
+    }
+
+    async function confirmBenchmarkDelete() {
+        const summary = benchmarkToDelete;
+        if (!summary || deletingBenchmark) return;
+        try {
+            setDeletingBenchmark(true);
+            setBenchmarkDeleteError('');
+            await ChatService.DeleteModelBenchmark(summary.id);
+            setBenchmarkSidebar((current) => ({
+                ...current,
+                recent: current.recent.filter((item) => item.id !== summary.id),
+            }));
+            setBenchmarkOpenRequestID((current) => current === summary.id ? null : current);
+            setBenchmarkHistoryRefreshKey((current) => current + 1);
+            setBenchmarkToDelete(null);
+        } catch (reason) {
+            setBenchmarkDeleteError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            setDeletingBenchmark(false);
+        }
+    }
 
     function replaceMessages(nextMessages: UIMessage[]) {
         messagesRef.current = nextMessages;
@@ -1372,7 +1405,8 @@ function App() {
                             <section className="benchmark-sidebar-current">
                                 <span className={benchmarkSidebar.status}>실행 중</span>
                                 <strong>{benchmarkSidebar.model}</strong>
-                                <small>{benchmarkSidebar.profileName} · {benchmarkSidebar.completedCaseCount}/{benchmarkSidebar.caseCount}개 완료</small>
+                                <small title={benchmarkSidebar.profileBaseURL}>{benchmarkSidebar.profileName} · {benchmarkSidebar.profileBaseURL}</small>
+                                <small>{benchmarkSidebar.completedCaseCount}/{benchmarkSidebar.caseCount}개 완료</small>
                             </section>
                         ) : (
                             <p>저장된 프로필에서 모델 하나를 선택해 편집 가능한 4개 테스트를 순차 실행합니다.</p>
@@ -1389,10 +1423,11 @@ function App() {
                                         type="button"
                                         disabled={benchmarkBusy}
                                         onClick={() => setBenchmarkOpenRequestID(item.id)}
+                                        title={`${item.profileName} · ${item.model} · ${item.profileBaseURL}`}
                                     >
-                                        <strong>{item.model}</strong>
-                                        <span>{item.suiteName}</span>
-                                        <small>{item.completedCaseCount}/{item.caseCount}개 완료 · {formatUpdatedAt(item.updatedAt)}</small>
+                                        <strong>{item.profileName} · {item.model}</strong>
+                                        <span>{item.profileBaseURL}</span>
+                                        <small>{item.suiteName} · {item.completedCaseCount}/{item.caseCount}개 · {formatUpdatedAt(item.updatedAt)}</small>
                                     </button>
                                 ))}
                             </div>
@@ -1410,6 +1445,8 @@ function App() {
                         onSidebarChange={handleBenchmarkSidebarChange}
                         openBenchmarkID={benchmarkOpenRequestID}
                         onOpenBenchmarkHandled={handleBenchmarkOpenRequestHandled}
+                        historyRefreshKey={benchmarkHistoryRefreshKey}
+                        onRequestBenchmarkDelete={requestBenchmarkDelete}
                     />
                 </main>
             ) : (
@@ -1609,6 +1646,23 @@ function App() {
                             </button>
                             <button type="button" className="dialog-delete-button" onClick={() => void confirmConversationDelete()} disabled={deletingConversation}>
                                 {deletingConversation ? '삭제 중…' : '삭제'}
+                            </button>
+                        </div>
+                    </section>
+                </div>
+            )}
+            {benchmarkToDelete && (
+                <div className="dialog-backdrop" role="presentation">
+                    <section className="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-benchmark-title">
+                        <h2 id="delete-benchmark-title">벤치마크 기록을 삭제할까요?</h2>
+                        <p>“{benchmarkToDelete.model} · {benchmarkToDelete.profileName}” 기록과 저장된 결과를 삭제합니다. 이 작업은 되돌릴 수 없습니다.</p>
+                        {benchmarkDeleteError && <p className="dialog-error" role="alert">{benchmarkDeleteError}</p>}
+                        <div className="dialog-actions">
+                            <button type="button" className="dialog-cancel-button" onClick={() => setBenchmarkToDelete(null)} disabled={deletingBenchmark}>
+                                취소
+                            </button>
+                            <button type="button" className="dialog-delete-button" onClick={() => void confirmBenchmarkDelete()} disabled={deletingBenchmark}>
+                                {deletingBenchmark ? '삭제 중…' : '삭제'}
                             </button>
                         </div>
                     </section>

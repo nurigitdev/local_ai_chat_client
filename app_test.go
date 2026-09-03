@@ -354,4 +354,14 @@ func TestModelBenchmarkStoreCreatesSavesAndOpensBenchmark(t *testing.T) {
 	if len(summaries) != 1 || summaries[0].Model != "model-a" || summaries[0].CaseCount != 2 || summaries[0].CompletedCaseCount != 2 {
 		t.Fatalf("List() = %#v", summaries)
 	}
+	if summaries[0].ProfileName != "로컬 vLLM" || summaries[0].ProfileBaseURL != "http://localhost:8000" {
+		t.Fatalf("List() profile summary = %#v", summaries[0])
+	}
+
+	if err := store.Delete(saved.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if _, err := store.Open(saved.ID); err == nil {
+		t.Fatal("Open() succeeded after benchmark Delete()")
+	}
 }

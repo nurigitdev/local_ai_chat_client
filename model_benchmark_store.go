@@ -46,6 +46,8 @@ type ModelBenchmarkSummary struct {
 	ID                          string  `json:"id"`
 	SuiteName                   string  `json:"suiteName"`
 	Model                       string  `json:"model"`
+	ProfileName                 string  `json:"profileName"`
+	ProfileBaseURL              string  `json:"profileBaseURL"`
 	Status                      string  `json:"status"`
 	UpdatedAt                   string  `json:"updatedAt"`
 	CaseCount                   int     `json:"caseCount"`
@@ -128,6 +130,25 @@ func (s *modelBenchmarkStore) Open(id string) (ModelBenchmark, error) {
 		return ModelBenchmark{}, errors.New("벤치마크 기록 ID가 일치하지 않습니다")
 	}
 	return benchmark, nil
+}
+
+func (s *modelBenchmarkStore) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !isSafeConversationID(id) {
+		return errors.New("올바르지 않은 벤치마크 ID입니다")
+	}
+	directory, err := s.directory()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(directory, id+".md")); errors.Is(err, os.ErrNotExist) {
+		return errors.New("벤치마크 기록을 찾을 수 없습니다")
+	} else if err != nil {
+		return fmt.Errorf("벤치마크 기록을 삭제할 수 없습니다: %w", err)
+	}
+	return nil
 }
 
 func (s *modelBenchmarkStore) List() ([]ModelBenchmarkSummary, error) {
@@ -297,6 +318,10 @@ func marshalModelBenchmark(benchmark ModelBenchmark) ([]byte, error) {
 	builder.Write(payload)
 	builder.WriteString(" -->\n\n## 모델\n\n")
 	builder.WriteString(benchmark.Model)
+	builder.WriteString("\n\n## 연결 프로필\n\n")
+	builder.WriteString(benchmark.ProfileName)
+	builder.WriteString("\n\n")
+	builder.WriteString(benchmark.ProfileBaseURL)
 	builder.WriteString("\n\n## 테스트 항목\n")
 	for _, benchmarkCase := range benchmark.Cases {
 		builder.WriteString("\n### ")
@@ -332,12 +357,14 @@ func modelBenchmarkTitle(benchmark ModelBenchmark) string {
 
 func modelBenchmarkSummary(benchmark ModelBenchmark) ModelBenchmarkSummary {
 	summary := ModelBenchmarkSummary{
-		ID:        benchmark.ID,
-		SuiteName: modelBenchmarkTitle(benchmark),
-		Model:     benchmark.Model,
-		Status:    benchmark.Status,
-		UpdatedAt: benchmark.UpdatedAt,
-		CaseCount: len(benchmark.Cases),
+		ID:             benchmark.ID,
+		SuiteName:      modelBenchmarkTitle(benchmark),
+		Model:          benchmark.Model,
+		ProfileName:    benchmark.ProfileName,
+		ProfileBaseURL: benchmark.ProfileBaseURL,
+		Status:         benchmark.Status,
+		UpdatedAt:      benchmark.UpdatedAt,
+		CaseCount:      len(benchmark.Cases),
 	}
 	var totalDuration int64
 	var firstTokenDuration int64

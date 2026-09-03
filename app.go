@@ -174,6 +174,10 @@ func (a *App) OpenModelBenchmark(id string) (ModelBenchmark, error) {
 	return a.benchmarks.Open(id)
 }
 
+func (a *App) DeleteModelBenchmark(id string) error {
+	return a.benchmarks.Delete(id)
+}
+
 func (a *App) StartChat(request ChatRequest) error {
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	request.Model = strings.TrimSpace(request.Model)

@@ -25,6 +25,10 @@ export function DeleteConversation(id: string): $CancellablePromise<void> {
     return $Call.ByID(1702807921, id);
 }
 
+export function DeleteModelBenchmark(id: string): $CancellablePromise<void> {
+    return $Call.ByID(2912364830, id);
+}
+
 export function DeleteSavedConnectionProfile(id: string): $CancellablePromise<void> {
     return $Call.ByID(4225912054, id);
 }

@@ -26,6 +26,7 @@ type BenchmarkSuite = {
 };
 type BenchmarkHomeTab = 'run' | 'analysis' | 'comparison';
 type BenchmarkMetric = 'totalDuration' | 'firstToken' | 'generationSpeed' | 'outputTokens';
+type BenchmarkChartScale = 'relative' | 'absolute';
 
 const quickBenchmarkTemplates: BenchmarkCaseDraft[] = [
     {
@@ -134,6 +135,7 @@ const benchmarkMetricOptions: Array<{key: BenchmarkMetric; label: string; direct
 export interface ModelBenchmarkSidebarState {
     model: string;
     profileName: string;
+    profileBaseURL: string;
     status: 'idle' | 'running';
     completedCaseCount: number;
     caseCount: number;
@@ -147,6 +149,8 @@ interface ModelBenchmarkProps {
     onSidebarChange: (state: ModelBenchmarkSidebarState) => void;
     openBenchmarkID: string | null;
     onOpenBenchmarkHandled: () => void;
+    historyRefreshKey: number;
+    onRequestBenchmarkDelete: (summary: ModelBenchmarkSummary) => void;
 }
 
 function makeID(): string {
@@ -214,7 +218,7 @@ function formatBenchmarkDate(value: string): string {
 }
 
 function benchmarkRecordLabel(summary: ModelBenchmarkSummary): string {
-    return `${summary.model} · ${summary.suiteName} · ${formatBenchmarkDate(summary.updatedAt)}`;
+    return `${summary.model} · ${summary.profileName} · ${summary.suiteName} · ${formatBenchmarkDate(summary.updatedAt)}`;
 }
 
 function hasSameTestConfiguration(left: ModelBenchmark, right: ModelBenchmark): boolean {
@@ -265,6 +269,8 @@ function benchmarkSummary(benchmark: ModelBenchmark): ModelBenchmarkSummary {
         id: benchmark.id,
         suiteName: benchmark.suiteName,
         model: benchmark.model,
+        profileName: benchmark.profileName,
+        profileBaseURL: benchmark.profileBaseURL,
         status: benchmark.status,
         updatedAt: benchmark.updatedAt,
         caseCount: cases.length,
@@ -300,16 +306,48 @@ function comparisonSummary(metric: BenchmarkMetric, values: Array<{label: string
     return `${bestLabels}${isTie ? '가 공동으로 가장 빠름' : '가 가장 빠름'} · ${formatBenchmarkMetric(metric, bestValue)}`;
 }
 
+function relativeBenchmarkValue(metric: BenchmarkMetric, value: number | undefined, values: Array<number | undefined>): number | undefined {
+    if (value === undefined) return undefined;
+    const availableValues = values.filter((candidate): candidate is number => candidate !== undefined && candidate > 0);
+    if (availableValues.length === 0) return undefined;
+    if (metric === 'totalDuration' || metric === 'firstToken') {
+        return value / Math.max(...availableValues) * 100;
+    }
+    return value / Math.max(...availableValues) * 100;
+}
+
+function formatRelativePercent(value: number): string {
+    const digits = value >= 10 ? 0 : 1;
+    return `${new Intl.NumberFormat('ko-KR', {maximumFractionDigits: digits}).format(value)}%`;
+}
+
+function relativeComparisonSummary(metric: BenchmarkMetric, values: Array<{label: string; value?: number}>): string {
+    const percentages = values.map((item) => ({
+        label: item.label,
+        value: relativeBenchmarkValue(metric, item.value, values.map((candidate) => candidate.value)),
+    })).filter((item): item is {label: string; value: number} => item.value !== undefined);
+    if (percentages.length === 0) return '측정값 없음';
+    return percentages.map((item) => `${item.label} ${formatRelativePercent(item.value)}`).join(' · ');
+}
+
+function relativeScaleDescription(metric: BenchmarkMetric): string {
+    if (metric === 'totalDuration' || metric === 'firstToken') return '각 질문의 가장 오래 걸린 응답 = 100% · 낮을수록 빠름';
+    if (metric === 'generationSpeed') return '각 질문의 가장 빠른 생성 속도 = 100%';
+    return '각 질문의 가장 많은 출력 = 100%';
+}
+
 function BenchmarkBarPlot({
     primary,
     secondary,
     tertiary,
     metric,
+    scale,
 }: {
     primary: ModelBenchmark;
     secondary?: ModelBenchmark | null;
     tertiary?: ModelBenchmark | null;
     metric: BenchmarkMetric;
+    scale: BenchmarkChartScale;
 }) {
     const primaryCases = primary.cases || [];
     const secondaryCases = secondary?.cases || [];
@@ -329,7 +367,7 @@ function BenchmarkBarPlot({
     return (
         <div className={`benchmark-vertical-chart${tertiary ? ' three-series' : ''}`}>
             <div className="benchmark-chart-scale" aria-hidden="true">
-                <span>{formatBenchmarkMetric(metric, maximumValue)}</span>
+                <span>{scale === 'relative' ? '100%' : formatBenchmarkMetric(metric, maximumValue)}</span>
                 <span>0</span>
             </div>
             <div className="benchmark-chart-groups">
@@ -337,17 +375,22 @@ function BenchmarkBarPlot({
                     const primaryValue = benchmarkMetricValue(primaryCase, metric);
                     const secondaryValue = benchmarkMetricValue(secondaryCase, metric);
                     const tertiaryValue = benchmarkMetricValue(tertiaryCase, metric);
+                    const groupValues = [primaryValue, secondaryValue, tertiaryValue];
+                    const primaryChartValue = scale === 'relative' ? relativeBenchmarkValue(metric, primaryValue, groupValues) : primaryValue;
+                    const secondaryChartValue = scale === 'relative' ? relativeBenchmarkValue(metric, secondaryValue, groupValues) : secondaryValue;
+                    const tertiaryChartValue = scale === 'relative' ? relativeBenchmarkValue(metric, tertiaryValue, groupValues) : tertiaryValue;
+                    const chartMaximum = scale === 'relative' ? 100 : maximumValue;
                     return (
                         <div className="benchmark-chart-group" key={index}>
                             <div className="benchmark-chart-bars">
                                 <div className="benchmark-chart-column">
                                     <span>{formatBenchmarkMetric(metric, primaryValue)}</span>
                                     <div className="benchmark-chart-track">
-                                        {primaryValue !== undefined && (
+                                        {primaryChartValue !== undefined && (
                                             <div
                                                 className="benchmark-chart-bar primary"
-                                                style={{height: `${Math.max(3, primaryValue / maximumValue * 100)}%`}}
-                                                title={`A · ${formatBenchmarkMetric(metric, primaryValue)}`}
+                                                style={{height: `${Math.max(3, primaryChartValue / chartMaximum * 100)}%`}}
+                                                title={`A · ${formatBenchmarkMetric(metric, primaryValue)}${scale === 'relative' ? ` · 상대 ${primaryChartValue.toFixed(1)}%` : ''}`}
                                             />
                                         )}
                                     </div>
@@ -357,11 +400,11 @@ function BenchmarkBarPlot({
                                     <div className="benchmark-chart-column">
                                         <span>{formatBenchmarkMetric(metric, secondaryValue)}</span>
                                         <div className="benchmark-chart-track">
-                                            {secondaryValue !== undefined && (
+                                            {secondaryChartValue !== undefined && (
                                                 <div
                                                     className="benchmark-chart-bar secondary"
-                                                    style={{height: `${Math.max(3, secondaryValue / maximumValue * 100)}%`}}
-                                                    title={`B · ${formatBenchmarkMetric(metric, secondaryValue)}`}
+                                                    style={{height: `${Math.max(3, secondaryChartValue / chartMaximum * 100)}%`}}
+                                                    title={`B · ${formatBenchmarkMetric(metric, secondaryValue)}${scale === 'relative' ? ` · 상대 ${secondaryChartValue.toFixed(1)}%` : ''}`}
                                                 />
                                             )}
                                         </div>
@@ -372,11 +415,11 @@ function BenchmarkBarPlot({
                                     <div className="benchmark-chart-column">
                                         <span>{formatBenchmarkMetric(metric, tertiaryValue)}</span>
                                         <div className="benchmark-chart-track">
-                                            {tertiaryValue !== undefined && (
+                                            {tertiaryChartValue !== undefined && (
                                                 <div
                                                     className="benchmark-chart-bar tertiary"
-                                                    style={{height: `${Math.max(3, tertiaryValue / maximumValue * 100)}%`}}
-                                                    title={`C · ${formatBenchmarkMetric(metric, tertiaryValue)}`}
+                                                    style={{height: `${Math.max(3, tertiaryChartValue / chartMaximum * 100)}%`}}
+                                                    title={`C · ${formatBenchmarkMetric(metric, tertiaryValue)}${scale === 'relative' ? ` · 상대 ${tertiaryChartValue.toFixed(1)}%` : ''}`}
                                                 />
                                             )}
                                         </div>
@@ -387,7 +430,11 @@ function BenchmarkBarPlot({
                             <strong>{index + 1}</strong>
                             <span title={primaryCase?.title || secondaryCase?.title || tertiaryCase?.title}>{primaryCase?.title || secondaryCase?.title || tertiaryCase?.title || '테스트'}</span>
                             {secondary && (
-                                <small>{comparisonSummary(metric, [
+                                <small>{scale === 'relative' ? relativeComparisonSummary(metric, [
+                                    {label: 'A', value: primaryValue},
+                                    {label: 'B', value: secondaryValue},
+                                    ...(tertiary ? [{label: 'C', value: tertiaryValue}] : []),
+                                ]) : comparisonSummary(metric, [
                                     {label: 'A', value: primaryValue},
                                     {label: 'B', value: secondaryValue},
                                     ...(tertiary ? [{label: 'C', value: tertiaryValue}] : []),
@@ -407,12 +454,16 @@ function BenchmarkVerticalChart({
     tertiary,
     metric,
     onMetricChange,
+    scale,
+    onScaleChange,
 }: {
     primary: ModelBenchmark;
     secondary?: ModelBenchmark | null;
     tertiary?: ModelBenchmark | null;
     metric: BenchmarkMetric;
     onMetricChange: (metric: BenchmarkMetric) => void;
+    scale: BenchmarkChartScale;
+    onScaleChange: (scale: BenchmarkChartScale) => void;
 }) {
     const metricOption = benchmarkMetricOptions.find((option) => option.key === metric) || benchmarkMetricOptions[0];
 
@@ -421,19 +472,27 @@ function BenchmarkVerticalChart({
             <div className="benchmark-visual-card-heading">
                 <div>
                     <strong>{metricOption.label}</strong>
-                    <small>{metricOption.direction}</small>
+                    <small>{secondary && scale === 'relative' ? relativeScaleDescription(metric) : metricOption.direction}</small>
                 </div>
-                <div className="benchmark-metric-switch" role="group" aria-label="그래프 지표">
-                    {benchmarkMetricOptions.map((option) => (
-                        <button
-                            className={metric === option.key ? 'active' : ''}
-                            key={option.key}
-                            type="button"
-                            onClick={() => onMetricChange(option.key)}
-                        >
-                            {option.label}
-                        </button>
-                    ))}
+                <div className="benchmark-chart-controls">
+                    {secondary && (
+                        <div className="benchmark-scale-switch" role="group" aria-label="그래프 눈금">
+                            <button className={scale === 'relative' ? 'active' : ''} type="button" onClick={() => onScaleChange('relative')}>상대 비교</button>
+                            <button className={scale === 'absolute' ? 'active' : ''} type="button" onClick={() => onScaleChange('absolute')}>실측값</button>
+                        </div>
+                    )}
+                    <div className="benchmark-metric-switch" role="group" aria-label="그래프 지표">
+                        {benchmarkMetricOptions.map((option) => (
+                            <button
+                                className={metric === option.key ? 'active' : ''}
+                                key={option.key}
+                                type="button"
+                                onClick={() => onMetricChange(option.key)}
+                            >
+                                {option.label}
+                            </button>
+                        ))}
+                    </div>
                 </div>
             </div>
             <div className="benchmark-chart-legend">
@@ -441,7 +500,7 @@ function BenchmarkVerticalChart({
                 {secondary && <span className="secondary">B · {secondary.model}</span>}
                 {tertiary && <span className="tertiary">C · {tertiary.model}</span>}
             </div>
-            <BenchmarkBarPlot primary={primary} secondary={secondary} tertiary={tertiary} metric={metric} />
+            <BenchmarkBarPlot primary={primary} secondary={secondary} tertiary={tertiary} metric={metric} scale={secondary ? scale : 'absolute'} />
         </section>
     );
 }
@@ -452,6 +511,8 @@ function ModelBenchmarkWorkspace({
     onSidebarChange,
     openBenchmarkID,
     onOpenBenchmarkHandled,
+    historyRefreshKey,
+    onRequestBenchmarkDelete,
 }: ModelBenchmarkProps) {
     const [profileID, setProfileID] = useState('');
     const [apiKey, setAPIKey] = useState('');
@@ -468,6 +529,7 @@ function ModelBenchmarkWorkspace({
     const [analysisID, setAnalysisID] = useState('');
     const [analysisRecord, setAnalysisRecord] = useState<ModelBenchmark | null>(null);
     const [analysisMetric, setAnalysisMetric] = useState<BenchmarkMetric>('totalDuration');
+    const [analysisScale, setAnalysisScale] = useState<BenchmarkChartScale>('absolute');
     const [comparisonAID, setComparisonAID] = useState('');
     const [comparisonBID, setComparisonBID] = useState('');
     const [comparisonCID, setComparisonCID] = useState('');
@@ -475,6 +537,7 @@ function ModelBenchmarkWorkspace({
     const [comparisonB, setComparisonB] = useState<ModelBenchmark | null>(null);
     const [comparisonC, setComparisonC] = useState<ModelBenchmark | null>(null);
     const [comparisonMetric, setComparisonMetric] = useState<BenchmarkMetric>('totalDuration');
+    const [comparisonScale, setComparisonScale] = useState<BenchmarkChartScale>('relative');
     const [loadingAnalysis, setLoadingAnalysis] = useState(false);
     const [loadingComparison, setLoadingComparison] = useState(false);
     const [isRunning, setIsRunning] = useState(false);
@@ -528,8 +591,9 @@ function ModelBenchmarkWorkspace({
     }
 
     useEffect(() => {
+        setLoadingHistory(true);
         void loadHistory();
-    }, []);
+    }, [historyRefreshKey]);
 
     useEffect(() => {
         const availableIDs = completedHistory.map((item) => item.id);
@@ -548,6 +612,12 @@ function ModelBenchmarkWorkspace({
         if (nextBID !== comparisonBID) setComparisonBID(nextBID);
         if (nextCID !== comparisonCID) setComparisonCID(nextCID);
     }, [analysisID, comparisonAID, comparisonBID, comparisonCID, completedHistory]);
+
+    useEffect(() => {
+        if (loadingHistory || isRunning || !benchmark || history.some((item) => item.id === benchmark.id)) return;
+        replaceBenchmark(null);
+        setView('home');
+    }, [benchmark, history, isRunning, loadingHistory]);
 
     useEffect(() => {
         if (!analysisID) {
@@ -610,6 +680,7 @@ function ModelBenchmarkWorkspace({
         onSidebarChange({
             model: isRunning ? benchmark?.model || '' : '',
             profileName: isRunning ? benchmark?.profileName || '' : '',
+            profileBaseURL: isRunning ? benchmark?.profileBaseURL || '' : '',
             status: isRunning ? 'running' : 'idle',
             completedCaseCount: isRunning ? summary?.completedCaseCount || 0 : 0,
             caseCount: isRunning ? summary?.caseCount || 0 : 0,
@@ -621,6 +692,7 @@ function ModelBenchmarkWorkspace({
     useEffect(() => () => onSidebarChange({
         model: '',
         profileName: '',
+        profileBaseURL: '',
         status: 'idle',
         completedCaseCount: 0,
         caseCount: 0,
@@ -922,13 +994,20 @@ function ModelBenchmarkWorkspace({
                         <span className="eyebrow">MODEL BENCHMARK</span>
                         <h1>{isRunning ? '벤치마크 실행 중' : stoppedRun ? '중단된 벤치마크' : '벤치마크 결과'}</h1>
                     </div>
-                    <button className="text-button" type="button" onClick={goHome}>모델 실험실 홈</button>
+                    <div className="benchmark-run-actions">
+                        {!isRunning && <button className="text-button danger" type="button" onClick={() => onRequestBenchmarkDelete(summary)}>기록 삭제</button>}
+                        <button className="text-button" type="button" onClick={goHome}>모델 실험실 홈</button>
+                    </div>
                 </header>
                 {error && <div className="error-banner" role="alert">{error}</div>}
                 <section className="benchmark-run-card">
                     <span>{benchmark.suiteName}</span>
                     <h2>{benchmark.model}</h2>
-                    <small>{benchmark.profileName} · 테스트 {benchmark.cases?.length || 0}개</small>
+                    <div className="benchmark-run-identity">
+                        <div><span>연결 프로필</span><strong>{benchmark.profileName}</strong></div>
+                        <div><span>서버 주소</span><code title={benchmark.profileBaseURL}>{benchmark.profileBaseURL}</code></div>
+                    </div>
+                    <small>테스트 {benchmark.cases?.length || 0}개 · {formatBenchmarkDate(benchmark.updatedAt)}</small>
                 </section>
                 {stoppedRun && <p className="benchmark-status-copy">이전 실행은 앱 종료 등으로 중단되었습니다. API 키를 저장하지 않으므로 안전하게 이어서 실행하지 않고, 새 벤치마크를 시작할 수 있습니다.</p>}
                 <section className="benchmark-summary-grid" aria-label="벤치마크 요약">
@@ -1085,14 +1164,19 @@ function ModelBenchmarkWorkspace({
                                 <div>
                                     <span>선택한 기록</span>
                                     <strong>{analysisRecord.model}</strong>
-                                    <small>{analysisRecord.profileName} · {formatBenchmarkDate(analysisRecord.updatedAt)}</small>
+                                    <small title={analysisRecord.profileBaseURL}>{analysisRecord.profileName} · {analysisRecord.profileBaseURL} · {formatBenchmarkDate(analysisRecord.updatedAt)}</small>
                                 </div>
-                                <button className="text-button" type="button" onClick={() => showStoredBenchmark(analysisRecord)} disabled={isRunning}>상세 결과 보기</button>
+                                <div className="benchmark-record-actions">
+                                    <button className="text-button" type="button" onClick={() => showStoredBenchmark(analysisRecord)} disabled={isRunning}>상세 결과 보기</button>
+                                    <button className="text-button danger" type="button" onClick={() => onRequestBenchmarkDelete(benchmarkSummary(analysisRecord))} disabled={isRunning}>기록 삭제</button>
+                                </div>
                             </section>
                             <BenchmarkVerticalChart
                                 primary={analysisRecord}
                                 metric={analysisMetric}
                                 onMetricChange={setAnalysisMetric}
+                                scale={analysisScale}
+                                onScaleChange={setAnalysisScale}
                             />
                         </>
                     )}
@@ -1145,7 +1229,7 @@ function ModelBenchmarkWorkspace({
                                 >
                                     <span>A</span>
                                     <strong>{comparisonA.model}</strong>
-                                    <small>{comparisonA.profileName} · {formatBenchmarkDate(comparisonA.updatedAt)}</small>
+                                    <small title={comparisonA.profileBaseURL}>{comparisonA.profileName} · {comparisonA.profileBaseURL} · {formatBenchmarkDate(comparisonA.updatedAt)}</small>
                                     <em>상세 결과 보기</em>
                                 </button>
                                 <button
@@ -1157,7 +1241,7 @@ function ModelBenchmarkWorkspace({
                                 >
                                     <span>B</span>
                                     <strong>{comparisonB.model}</strong>
-                                    <small>{comparisonB.profileName} · {formatBenchmarkDate(comparisonB.updatedAt)}</small>
+                                    <small title={comparisonB.profileBaseURL}>{comparisonB.profileName} · {comparisonB.profileBaseURL} · {formatBenchmarkDate(comparisonB.updatedAt)}</small>
                                     <em>상세 결과 보기</em>
                                 </button>
                                 {comparisonC && (
@@ -1170,7 +1254,7 @@ function ModelBenchmarkWorkspace({
                                     >
                                         <span>C</span>
                                         <strong>{comparisonC.model}</strong>
-                                        <small>{comparisonC.profileName} · {formatBenchmarkDate(comparisonC.updatedAt)}</small>
+                                        <small title={comparisonC.profileBaseURL}>{comparisonC.profileName} · {comparisonC.profileBaseURL} · {formatBenchmarkDate(comparisonC.updatedAt)}</small>
                                         <em>상세 결과 보기</em>
                                     </button>
                                 )}
@@ -1188,6 +1272,8 @@ function ModelBenchmarkWorkspace({
                                 tertiary={comparisonC}
                                 metric={comparisonMetric}
                                 onMetricChange={setComparisonMetric}
+                                scale={comparisonScale}
+                                onScaleChange={setComparisonScale}
                             />
                         </>
                     )}
