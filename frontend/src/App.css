@@ -671,6 +671,415 @@ button:disabled {
     min-width: 96px;
 }
 
+.benchmark-home-tabs {
+    display: grid;
+    width: min(560px, 100%);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 3px;
+    border: 1px solid #dcdcd5;
+    border-radius: 9px;
+    background: #e8e8e2;
+}
+
+.benchmark-home-tabs button {
+    height: 34px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: #73736c;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 650;
+}
+
+.benchmark-home-tabs button.active {
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(31, 31, 27, 0.1);
+    color: #292925;
+}
+
+.benchmark-visualization-panel {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.benchmark-visualization-controls,
+.benchmark-comparison-selectors {
+    padding: 17px;
+    border: 1px solid #deded7;
+    border-radius: 11px;
+    background: #fff;
+    box-shadow: 0 6px 22px rgba(31, 31, 27, 0.035);
+}
+
+.benchmark-visualization-controls label {
+    max-width: 520px;
+}
+
+.benchmark-comparison-selectors {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.benchmark-visualization-empty {
+    display: grid;
+    min-height: 250px;
+    place-items: center;
+    border: 1px dashed #d8d8d1;
+    border-radius: 11px;
+    color: #8c8c84;
+    font-size: 12px;
+    text-align: center;
+}
+
+.benchmark-record-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 15px 17px;
+    border: 1px solid #d8e1e7;
+    border-radius: 10px;
+    background: #f7fbfd;
+}
+
+.benchmark-record-summary > div,
+.benchmark-comparison-record {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.benchmark-record-summary span,
+.benchmark-comparison-record span {
+    color: #637b8b;
+    font-size: 9px;
+    font-weight: 750;
+    letter-spacing: 0.08em;
+}
+
+.benchmark-record-summary strong,
+.benchmark-comparison-record strong {
+    overflow: hidden;
+    color: #343430;
+    font-size: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.benchmark-record-summary small,
+.benchmark-comparison-record small {
+    color: #83837b;
+    font-size: 10px;
+}
+
+.benchmark-comparison-records {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.benchmark-comparison-record {
+    padding: 14px 16px;
+    border: 1px solid #d8e1e7;
+    border-radius: 10px;
+    background: #f7fbfd;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+}
+
+.benchmark-comparison-record:hover:not(:disabled) {
+    border-color: #7d9fb2;
+    box-shadow: 0 5px 14px rgba(44, 84, 107, 0.11);
+    transform: translateY(-1px);
+}
+
+.benchmark-comparison-record:focus-visible {
+    outline: 2px solid #3f7898;
+    outline-offset: 2px;
+}
+
+.benchmark-comparison-record:disabled {
+    cursor: default;
+}
+
+.benchmark-comparison-record em {
+    margin-top: 4px;
+    color: #56778a;
+    font-size: 9px;
+    font-style: normal;
+    font-weight: 650;
+}
+
+.benchmark-comparison-record.secondary {
+    border-color: #eadacb;
+    background: #fffaf5;
+}
+
+.benchmark-comparison-record.secondary span,
+.benchmark-comparison-record.secondary em {
+    color: #a1613c;
+}
+
+.benchmark-comparison-records.has-tertiary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.benchmark-comparison-record.tertiary {
+    border-color: #dbe4cb;
+    background: #f8fbf2;
+}
+
+.benchmark-comparison-record.tertiary span,
+.benchmark-comparison-record.tertiary em {
+    color: #667b48;
+}
+
+.benchmark-comparison-notice {
+    margin: 0;
+    padding: 9px 11px;
+    border: 1px solid #d6e2d8;
+    border-radius: 8px;
+    background: #f5faf6;
+    color: #56705d;
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+.benchmark-comparison-notice.warning {
+    border-color: #ead9bd;
+    background: #fffaf0;
+    color: #86673d;
+}
+
+.benchmark-visual-card {
+    min-width: 0;
+    padding: 18px;
+    border: 1px solid #deded7;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 6px 22px rgba(31, 31, 27, 0.035);
+    overflow-x: auto;
+}
+
+.benchmark-visual-card-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+}
+
+.benchmark-visual-card-heading > div:first-child {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.benchmark-visual-card-heading strong {
+    color: #363632;
+    font-size: 14px;
+}
+
+.benchmark-visual-card-heading small {
+    color: #8a8a82;
+    font-size: 10px;
+}
+
+.benchmark-metric-switch {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px;
+}
+
+.benchmark-metric-switch button {
+    height: 28px;
+    padding: 0 9px;
+    border: 1px solid #deded7;
+    border-radius: 6px;
+    background: #fafaf8;
+    color: #74746c;
+    cursor: pointer;
+    font-size: 9px;
+    font-weight: 650;
+}
+
+.benchmark-metric-switch button.active {
+    border-color: #3c667f;
+    background: #3c667f;
+    color: #fff;
+}
+
+.benchmark-chart-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    margin-top: 14px;
+    color: #696961;
+    font-size: 10px;
+}
+
+.benchmark-chart-legend span::before {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 5px;
+    border-radius: 2px;
+    background: #3f7898;
+    content: '';
+}
+
+.benchmark-chart-legend span.secondary::before {
+    background: #c87849;
+}
+
+.benchmark-chart-legend span.tertiary::before {
+    background: #78935b;
+}
+
+.benchmark-vertical-chart {
+    display: grid;
+    min-width: 680px;
+    margin-top: 15px;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 10px;
+}
+
+.benchmark-vertical-chart.three-series {
+    min-width: 740px;
+}
+
+.benchmark-vertical-chart.three-series .benchmark-chart-groups {
+    grid-template-columns: repeat(4, minmax(136px, 1fr));
+}
+
+.benchmark-vertical-chart.three-series .benchmark-chart-bars {
+    gap: 5px;
+}
+
+.benchmark-vertical-chart.three-series .benchmark-chart-column {
+    width: 40px;
+}
+
+.benchmark-chart-scale {
+    display: flex;
+    height: 258px;
+    padding-top: 19px;
+    padding-bottom: 39px;
+    box-sizing: border-box;
+    justify-content: space-between;
+    color: #92928a;
+    flex-direction: column;
+    font-size: 9px;
+    text-align: right;
+}
+
+.benchmark-chart-groups {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+    gap: 16px;
+}
+
+.benchmark-chart-group {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    flex-direction: column;
+}
+
+.benchmark-chart-bars {
+    display: flex;
+    height: 258px;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 7px;
+    border-bottom: 1px solid #cfcfc8;
+    background-image: linear-gradient(to bottom, #ecece7 1px, transparent 1px);
+    background-size: 100% 25%;
+}
+
+.benchmark-chart-column {
+    display: grid;
+    width: 46px;
+    grid-template-rows: 19px 200px 23px;
+    align-items: end;
+    text-align: center;
+}
+
+.benchmark-chart-column > span {
+    overflow: hidden;
+    color: #55554f;
+    font-size: 8px;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.benchmark-chart-column > small {
+    align-self: center;
+    color: #77776f;
+    font-size: 9px;
+    font-weight: 750;
+}
+
+.benchmark-chart-track {
+    position: relative;
+    width: 100%;
+    height: 200px;
+}
+
+.benchmark-chart-bar {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    border-radius: 5px 5px 2px 2px;
+    background: linear-gradient(180deg, #5b8da8, #356e8e);
+    transition: height 180ms ease;
+}
+
+.benchmark-chart-bar.secondary {
+    background: linear-gradient(180deg, #d59063, #bc6939);
+}
+
+.benchmark-chart-bar.tertiary {
+    background: linear-gradient(180deg, #92ab70, #6f8a50);
+}
+
+.benchmark-chart-group > strong {
+    margin-top: 8px;
+    color: #3e3e39;
+    font-size: 11px;
+}
+
+.benchmark-chart-group > span {
+    width: 100%;
+    min-height: 31px;
+    overflow: hidden;
+    color: #6e6e67;
+    display: -webkit-box;
+    font-size: 9px;
+    line-height: 1.45;
+    text-align: center;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.benchmark-chart-group > small {
+    min-height: 14px;
+    margin-top: 3px;
+    color: #87877f;
+    font-size: 8px;
+    text-align: center;
+}
+
 .benchmark-run-card > span,
 .benchmark-suite-preview > div span,
 .benchmark-summary-grid span,
@@ -701,9 +1110,15 @@ button:disabled {
 
 .benchmark-suite-preview > .benchmark-suite-heading {
     display: flex;
-    align-items: baseline;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 10px;
+}
+
+.benchmark-suite-preview > .benchmark-suite-heading > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
 }
 
 .benchmark-suite-preview > .benchmark-suite-heading button,
@@ -760,9 +1175,24 @@ button:disabled {
     gap: 8px;
 }
 
-.benchmark-template-editor-item strong {
+.benchmark-template-editor-category {
     color: #4b4b45;
     font-size: 11px;
+    font-weight: 700;
+}
+
+.benchmark-template-editor-title {
+    gap: 5px;
+    color: #77776f;
+    font-size: 10px;
+}
+
+.benchmark-template-editor-title input {
+    height: 33px;
+    padding: 0 9px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 650;
 }
 
 .benchmark-template-editor-item textarea {
@@ -1713,6 +2143,24 @@ button:disabled {
 
     .benchmark-template-editor-item {
         grid-template-columns: 1fr;
+    }
+
+    .benchmark-comparison-selectors,
+    .benchmark-comparison-records {
+        grid-template-columns: 1fr;
+    }
+
+    .benchmark-visual-card-heading {
+        flex-direction: column;
+    }
+
+    .benchmark-metric-switch {
+        justify-content: flex-start;
+    }
+
+    .benchmark-record-summary {
+        align-items: flex-start;
+        flex-direction: column;
     }
 
     .benchmark-page {
