@@ -128,6 +128,29 @@ func TestConversationStoreRejectsUnsafeConversationID(t *testing.T) {
 	}
 }
 
+func TestValidateAttachmentsAllowsLargeSourceWhenExtractedTextIsLimited(t *testing.T) {
+	attachment := ChatAttachment{
+		Name:      "large-document.pdf",
+		Size:      2 * 1024 * 1024,
+		Content:   strings.Repeat("가", 70_000),
+		Truncated: true,
+	}
+	if err := validateAttachments([]ChatAttachment{attachment}); err != nil {
+		t.Fatalf("validateAttachments() error = %v", err)
+	}
+}
+
+func TestValidateAttachmentsRejectsOversizedSourceFile(t *testing.T) {
+	attachment := ChatAttachment{
+		Name:    "too-large.txt",
+		Size:    maxAttachmentFileSize + 1,
+		Content: "excerpt",
+	}
+	if err := validateAttachments([]ChatAttachment{attachment}); err == nil {
+		t.Fatal("validateAttachments() error = nil, want oversized source rejection")
+	}
+}
+
 func TestConnectionProfileStoreSavesOnlyServerURL(t *testing.T) {
 	root := t.TempDir()
 	store := newConnectionProfileStore(root)

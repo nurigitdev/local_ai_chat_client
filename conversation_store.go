@@ -19,6 +19,8 @@ const (
 	newConversationTitle     = "새 대화"
 	conversationDirectory    = "conversations"
 	maxAttachmentsPerMessage = 4
+	maxAttachmentFileSize    = 5 * 1024 * 1024
+	maxAttachmentTotalFiles  = 12 * 1024 * 1024
 	maxAttachmentContentSize = 256 * 1024
 	maxAttachmentTotalSize   = 512 * 1024
 )
@@ -35,12 +37,14 @@ type ConversationMessage struct {
 	Metrics     *ResponseMetrics `json:"metrics,omitempty"`
 }
 
-// ChatAttachment stores the locally extracted text for an attached text or
-// source-code file. The original file is never copied from its location.
+// ChatAttachment stores the locally extracted text for an attached text,
+// source-code file, or text-based PDF. The original file is never copied from
+// its location.
 type ChatAttachment struct {
-	Name    string `json:"name"`
-	Size    int64  `json:"size"`
-	Content string `json:"content"`
+	Name      string `json:"name"`
+	Size      int64  `json:"size"`
+	Content   string `json:"content"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 type Conversation struct {
@@ -384,21 +388,26 @@ func validateAttachments(attachments []ChatAttachment) error {
 		return fmt.Errorf("첨부 파일은 메시지당 최대 %d개까지 가능합니다", maxAttachmentsPerMessage)
 	}
 
-	totalSize := 0
+	totalFileSize := int64(0)
+	totalContentSize := 0
 	for _, attachment := range attachments {
 		name := strings.TrimSpace(attachment.Name)
 		if name == "" || len([]rune(name)) > 160 {
 			return errors.New("첨부 파일 이름이 올바르지 않습니다")
 		}
-		if attachment.Size < 0 || attachment.Size > maxAttachmentContentSize || len([]byte(attachment.Content)) > maxAttachmentContentSize {
+		if attachment.Size < 0 || attachment.Size > maxAttachmentFileSize || len([]byte(attachment.Content)) > maxAttachmentContentSize {
 			return errors.New("첨부 파일 크기가 허용 범위를 벗어났습니다")
 		}
 		if strings.IndexByte(attachment.Content, 0) >= 0 {
 			return errors.New("텍스트 파일만 첨부할 수 있습니다")
 		}
-		totalSize += len([]byte(attachment.Content))
+		totalFileSize += attachment.Size
+		totalContentSize += len([]byte(attachment.Content))
 	}
-	if totalSize > maxAttachmentTotalSize {
+	if totalFileSize > maxAttachmentTotalFiles {
+		return errors.New("첨부 원본 파일의 전체 크기가 허용 범위를 벗어났습니다")
+	}
+	if totalContentSize > maxAttachmentTotalSize {
 		return errors.New("첨부 파일 전체 크기가 허용 범위를 벗어났습니다")
 	}
 	return nil

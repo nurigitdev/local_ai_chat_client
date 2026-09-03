@@ -1,5 +1,6 @@
 import {ChangeEvent, FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState, WheelEvent} from 'react';
 import {Events} from '@wailsio/runtime';
+import type {TextContent} from 'pdfjs-dist/types/src/display/api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {App as ChatService} from '../bindings/github.com/taengson/agent-chat-desktop';
@@ -47,12 +48,15 @@ const attachmentFileExtensions = new Set([
     'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'go', 'py', 'java', 'kt', 'kts', 'rb',
     'php', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'cs', 'rs', 'swift', 'sh', 'zsh',
     'sql', 'html', 'css', 'scss', 'less', 'vue', 'svelte', 'graphql', 'gql',
+    'pdf',
 ]);
 const attachmentAccept = Array.from(attachmentFileExtensions, (extension) => `.${extension}`).join(',');
 const maxAttachmentsPerMessage = 4;
-const maxAttachmentFileSize = 256 * 1024;
-const maxAttachmentTextSize = 120_000;
-const maxAttachmentTotalSize = 512 * 1024;
+const maxAttachmentFileSize = 5 * 1024 * 1024;
+const maxAttachmentTotalFileSize = 12 * 1024 * 1024;
+const maxAttachmentContentSize = 240 * 1024;
+const maxAttachmentTotalContentSize = 512 * 1024;
+const attachmentExcerptMarker = '\n\n[문서가 길어 앞부분과 뒷부분만 모델에 전달했습니다.]\n\n';
 const emptyBenchmarkSidebar: ModelBenchmarkSidebarState = {
     model: '',
     profileName: '',
@@ -115,7 +119,129 @@ function attachmentExtension(fileName: string): string {
 
 function formatFileSize(bytes: number): string {
     if (bytes < 1_024) return `${bytes}B`;
-    return `${new Intl.NumberFormat('ko-KR', {maximumFractionDigits: 0}).format(bytes / 1_024)}KB`;
+    if (bytes < 1_024 * 1_024) {
+        return `${new Intl.NumberFormat('ko-KR', {maximumFractionDigits: 0}).format(bytes / 1_024)}KB`;
+    }
+    return `${new Intl.NumberFormat('ko-KR', {maximumFractionDigits: 1}).format(bytes / (1_024 * 1_024))}MB`;
+}
+
+function textByteSize(content: string): number {
+    return new TextEncoder().encode(content).byteLength;
+}
+
+function decodeLeadingUTF8(bytes: Uint8Array, length: number): string {
+    const decoder = new TextDecoder('utf-8', {fatal: true});
+    for (let trim = 0; trim < 4; trim += 1) {
+        try {
+            return decoder.decode(bytes.slice(0, length - trim));
+        } catch {
+            // Avoid splitting a multi-byte character at the excerpt boundary.
+        }
+    }
+    return new TextDecoder().decode(bytes.slice(0, length));
+}
+
+function decodeTrailingUTF8(bytes: Uint8Array, length: number): string {
+    const decoder = new TextDecoder('utf-8', {fatal: true});
+    for (let trim = 0; trim < 4; trim += 1) {
+        try {
+            return decoder.decode(bytes.slice(bytes.length - length + trim));
+        } catch {
+            // Avoid splitting a multi-byte character at the excerpt boundary.
+        }
+    }
+    return new TextDecoder().decode(bytes.slice(bytes.length - length));
+}
+
+function excerptAttachmentContent(content: string): Pick<ChatAttachment, 'content' | 'truncated'> {
+    const normalized = content.replace(/\r\n?/g, '\n');
+    const bytes = new TextEncoder().encode(normalized);
+    if (bytes.byteLength <= maxAttachmentContentSize) {
+        return {content: normalized, truncated: false};
+    }
+
+    const markerSize = textByteSize(attachmentExcerptMarker);
+    const availableSize = maxAttachmentContentSize - markerSize;
+    const leadingSize = Math.floor(availableSize * 0.7);
+    const trailingSize = availableSize - leadingSize;
+    return {
+        content: `${decodeLeadingUTF8(bytes, leadingSize)}${attachmentExcerptMarker}${decodeTrailingUTF8(bytes, trailingSize)}`,
+        truncated: true,
+    };
+}
+
+function pdfPageText(items: TextContent['items']): string {
+    return items.map((item) => {
+        if (!item || typeof item !== 'object' || !('str' in item) || typeof item.str !== 'string') {
+            return '';
+        }
+        return `${item.str}${'hasEOL' in item && item.hasEOL ? '\n' : ' '}`;
+    }).join('').replace(/[ \t]+\n/g, '\n').trim();
+}
+
+async function streamPDFPageText(page: {streamTextContent: () => ReadableStream<Pick<TextContent, 'items'>>}): Promise<string> {
+    const reader = page.streamTextContent().getReader();
+    const items: TextContent['items'] = [];
+    try {
+        while (true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+            items.push(...value.items);
+        }
+    } finally {
+        reader.releaseLock();
+    }
+    return pdfPageText(items);
+}
+
+async function readPDFContent(file: File): Promise<string> {
+    const [{getDocument, GlobalWorkerOptions}, {default: pdfWorkerURL}] = await Promise.all([
+        import('pdfjs-dist'),
+        import('pdfjs-dist/build/pdf.worker.mjs?url'),
+    ]);
+    GlobalWorkerOptions.workerSrc = pdfWorkerURL;
+    const loadingTask = getDocument({data: new Uint8Array(await file.arrayBuffer())});
+
+    try {
+        const document = await loadingTask.promise;
+        const pageNumbers = document.numPages <= 100
+            ? Array.from({length: document.numPages}, (_, index) => index + 1)
+            : [
+                ...Array.from({length: 70}, (_, index) => index + 1),
+                ...Array.from({length: 30}, (_, index) => document.numPages - 29 + index),
+            ];
+        const pages: string[] = [];
+        let previousPage = 0;
+        for (const pageNumber of pageNumbers) {
+            if (previousPage > 0 && pageNumber > previousPage + 1) {
+                pages.push(`[PDF ${previousPage + 1}~${pageNumber - 1}쪽은 길이 제한으로 생략됨]`);
+            }
+            const page = await document.getPage(pageNumber);
+            const text = await streamPDFPageText(page);
+            if (text) pages.push(`[PDF ${pageNumber}쪽]\n${text}`);
+            previousPage = pageNumber;
+        }
+
+        const text = pages.join('\n\n').trim();
+        if (!text) {
+            throw new Error(`“${attachmentFileName(file.name)}”에서 읽을 수 있는 텍스트를 찾지 못했습니다. 스캔된 PDF는 아직 지원하지 않습니다.`);
+        }
+        return text;
+    } finally {
+        await loadingTask.destroy();
+    }
+}
+
+async function readAttachmentContent(file: File, name: string): Promise<string> {
+    if (attachmentExtension(name) === 'pdf') {
+        return readPDFContent(file);
+    }
+
+    const content = await file.text();
+    if (content.includes('\0')) {
+        throw new Error(`“${name}”은 텍스트 파일로 읽을 수 없습니다.`);
+    }
+    return content;
 }
 
 function messageContentForModel(message: UIMessage): string {
@@ -936,19 +1062,20 @@ function App() {
                     throw new Error(`“${name}”은 파일당 ${formatFileSize(maxAttachmentFileSize)}까지 첨부할 수 있습니다.`);
                 }
 
-                const content = await file.text();
-                if (content.includes('\0')) {
-                    throw new Error(`“${name}”은 텍스트 파일로 읽을 수 없습니다.`);
-                }
-                if (content.length > maxAttachmentTextSize) {
-                    throw new Error(`“${name}”의 텍스트 내용이 너무 깁니다.`);
-                }
-                return {name, size: file.size, content};
+                const extracted = await readAttachmentContent(file, name);
+                const excerpt = excerptAttachmentContent(extracted);
+                return {name, size: file.size, ...excerpt};
             }));
-            const currentSize = attachments.reduce((total, attachment) => total + attachment.size, 0);
-            const nextSize = nextAttachments.reduce((total, attachment) => total + attachment.size, currentSize);
-            if (nextSize > maxAttachmentTotalSize) {
-                setError(`첨부 파일의 전체 크기는 ${formatFileSize(maxAttachmentTotalSize)}까지 보낼 수 있습니다.`);
+            const currentFileSize = attachments.reduce((total, attachment) => total + attachment.size, 0);
+            const nextFileSize = nextAttachments.reduce((total, attachment) => total + attachment.size, currentFileSize);
+            if (nextFileSize > maxAttachmentTotalFileSize) {
+                setError(`첨부 원본 파일의 전체 크기는 ${formatFileSize(maxAttachmentTotalFileSize)}까지 첨부할 수 있습니다.`);
+                return;
+            }
+            const currentContentSize = attachments.reduce((total, attachment) => total + textByteSize(attachment.content), 0);
+            const nextContentSize = nextAttachments.reduce((total, attachment) => total + textByteSize(attachment.content), currentContentSize);
+            if (nextContentSize > maxAttachmentTotalContentSize) {
+                setError(`모델에 전달할 문서 텍스트는 한 메시지에 ${formatFileSize(maxAttachmentTotalContentSize)}까지 가능합니다.`);
                 return;
             }
 
@@ -1348,7 +1475,7 @@ function App() {
                                             <div className="message-attachments" aria-label="첨부 파일">
                                                 {message.attachments.map((attachment, attachmentIndex) => (
                                                     <span key={`${attachment.name}-${attachmentIndex}`}>
-                                                        {attachment.name} · {formatFileSize(attachment.size)}
+                                                        {attachment.name} · {formatFileSize(attachment.size)}{attachment.truncated ? ' · 일부 발췌' : ''}
                                                     </span>
                                                 ))}
                                             </div>
@@ -1418,8 +1545,8 @@ function App() {
                             type="button"
                             onClick={() => attachmentInputRef.current?.click()}
                             disabled={!activeConversation || !selectedModel || busy || attachments.length >= maxAttachmentsPerMessage}
-                            aria-label="텍스트 또는 코드 파일 첨부"
-                            title="텍스트 또는 코드 파일 첨부"
+                            aria-label="텍스트, 코드 또는 PDF 파일 첨부"
+                            title="텍스트, 코드 또는 PDF 파일 첨부"
                         >
                             파일
                         </button>
@@ -1429,7 +1556,7 @@ function App() {
                                     {attachments.map((attachment, index) => (
                                         <span key={`${attachment.name}-${index}`}>
                                             <strong>{attachment.name}</strong>
-                                            <small>{formatFileSize(attachment.size)}</small>
+                                            <small>{formatFileSize(attachment.size)}{attachment.truncated ? ' · 일부 발췌' : ''}</small>
                                             <button
                                                 type="button"
                                                 onClick={() => removeAttachment(index)}
