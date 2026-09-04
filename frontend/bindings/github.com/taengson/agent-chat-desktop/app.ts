@@ -61,6 +61,20 @@ export function OpenModelBenchmark(id: string): $CancellablePromise<$models.Mode
     return $Call.ByID(2364498477, id);
 }
 
+/**
+ * SaveBenchmarkExport writes a user-selected benchmark report.
+ */
+export function SaveBenchmarkExport(path: string, contents: string): $CancellablePromise<void> {
+    return $Call.ByID(760497389, path, contents);
+}
+
+/**
+ * SaveChatShare writes a user-selected chat response share file.
+ */
+export function SaveChatShare(path: string, contents: string): $CancellablePromise<void> {
+    return $Call.ByID(1701743309, path, contents);
+}
+
 export function SaveConnectionProfile(profile: $models.SavedConnectionProfile): $CancellablePromise<$models.SavedConnectionProfile> {
     return $Call.ByID(3622685069, profile);
 }

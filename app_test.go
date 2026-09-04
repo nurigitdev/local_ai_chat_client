@@ -40,6 +40,46 @@ func TestResponseMetrics(t *testing.T) {
 	}
 }
 
+func TestSaveBenchmarkExportWritesOnlySupportedReportFiles(t *testing.T) {
+	app := NewApp()
+	path := filepath.Join(t.TempDir(), "benchmark-report.md")
+
+	if err := app.SaveBenchmarkExport(path, "# Benchmark report\n"); err != nil {
+		t.Fatalf("SaveBenchmarkExport() error = %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if got, want := string(contents), "# Benchmark report\n"; got != want {
+		t.Fatalf("export contents = %q, want %q", got, want)
+	}
+
+	if err := app.SaveBenchmarkExport(filepath.Join(t.TempDir(), "benchmark-report.txt"), "report"); err == nil {
+		t.Fatal("SaveBenchmarkExport() accepted an unsupported extension")
+	}
+}
+
+func TestSaveChatShareWritesOnlySupportedShareFiles(t *testing.T) {
+	app := NewApp()
+	path := filepath.Join(t.TempDir(), "chat-share.html")
+
+	if err := app.SaveChatShare(path, "<h1>Shared response</h1>"); err != nil {
+		t.Fatalf("SaveChatShare() error = %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if got, want := string(contents), "<h1>Shared response</h1>"; got != want {
+		t.Fatalf("share contents = %q, want %q", got, want)
+	}
+
+	if err := app.SaveChatShare(filepath.Join(t.TempDir(), "chat-share.txt"), "response"); err == nil {
+		t.Fatal("SaveChatShare() accepted an unsupported extension")
+	}
+}
+
 func TestConversationStoreCreatesSavesAndOpensMarkdownConversation(t *testing.T) {
 	store := newConversationStore(t.TempDir())
 

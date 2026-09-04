@@ -1,8 +1,10 @@
 import {FormEvent, useEffect, useMemo, useRef, useState} from 'react';
-import {Events} from '@wailsio/runtime';
+import {Dialogs, Events} from '@wailsio/runtime';
 import ReactMarkdown from 'react-markdown';
+import {renderToStaticMarkup} from 'react-dom/server';
 import remarkGfm from 'remark-gfm';
 import {App as ChatService} from '../bindings/github.com/taengson/agent-chat-desktop';
+import OpenRouterModelPicker, {isOpenRouterURL} from './OpenRouterModelPicker';
 import type {
     ChatEvent,
     ConnectionProfile,
@@ -16,6 +18,12 @@ import type {
 } from '../bindings/github.com/taengson/agent-chat-desktop/models';
 
 const chatEventName = 'chat:event';
+const openRouterProfileID = 'builtin-openrouter';
+const openRouterBenchmarkProfile: SavedConnectionProfile = {
+    id: openRouterProfileID,
+    name: 'OpenRouter',
+    baseURL: 'https://openrouter.ai/api/v1',
+};
 
 type BenchmarkCaseDraft = Pick<ModelBenchmarkCase, 'category' | 'title' | 'prompt'>;
 type BenchmarkSuite = {
@@ -27,103 +35,78 @@ type BenchmarkSuite = {
 type BenchmarkHomeTab = 'run' | 'analysis' | 'comparison';
 type BenchmarkMetric = 'totalDuration' | 'firstToken' | 'generationSpeed' | 'outputTokens';
 type BenchmarkChartScale = 'relative' | 'absolute';
+type BenchmarkExportKind = 'analysis' | 'comparison';
+type BenchmarkExportFormat = 'html' | 'markdown';
 
-const quickBenchmarkTemplates: BenchmarkCaseDraft[] = [
+const developmentBenchmarkTemplates: BenchmarkCaseDraft[] = [
     {
-        category: '지시 이행',
-        title: '구조화된 출력',
-        prompt: `다음 두 고객 문의를 각각 한 문장으로 요약하세요. 반드시 JSON 배열만 출력하고, 각 객체는 "id"와 "summary" 키만 가져야 합니다.\n\n1. "어제 주문한 무선 키보드가 아직 배송 준비 중입니다. 언제 받을 수 있나요?"\n2. "정기 결제 금액이 예상보다 높습니다. 이번 달 청구 내역을 설명해 주세요."`,
+        category: '알고리즘',
+        title: '3Sum · 중복과 경계값',
+        prompt: `정수 배열이 주어졌을 때, 합이 0이 되는 세 개의 엘리먼트를 모두 찾는 3Sum 알고리즘을 작성해줘.\n\n조건:\n- 중복된 결과는 없어야 합니다.\n- 시간 복잡도는 O(n^2)으로 최적화해줘.\n- 입력 배열이 비어있거나 요소가 3개 미만인 경우의 처리도 포함해줘.`,
     },
     {
-        category: '추론',
-        title: '제약 조건 추론',
-        prompt: `A, B, C, D 네 작업을 한 줄로 배치하려고 합니다. A는 B보다 앞에 있어야 하고, D는 C보다 앞에 있어야 하며, B는 마지막이어야 합니다. 가능한 배치 하나를 제시한 뒤 각 조건을 짧게 확인하세요.`,
+        category: '엄격한 제약 조건 이행',
+        title: '엄격한 제약 조건 이행 테스트',
+        prompt: `비밀번호 유효성을 검사하는 함수를 작성해줘.
+
+제약 조건:
+1. 최소 10자 이상
+2. 대문자/소문자/숫자/특수문자 포함
+3. 동일한 문자 3번 연속 사용 금지
+
+단, if문을 사용하지 않고 오직 정규표현식(Regex)만 사용하여 작성하고, 각 정규표현식 그룹이 무엇을 의미하는지 표(Table)로 정리해줘.`,
     },
     {
-        category: '코드',
-        title: '안전한 입력 처리',
-        prompt: `TypeScript로 parsePositiveIntegers(input: string): number[] 함수를 작성하세요. 쉼표로 구분한 입력에서 양의 정수만 반환하고, 공백·빈 항목·0·음수·소수·문자는 제외해야 합니다. 코드와 두 줄 이내의 설명만 제공하세요.`,
+        category: 'Python 코드 작성',
+        title: '팰린드롬 판별 함수',
+        prompt: `Python을 사용하여 사용자가 입력한 문자열이 팰린드롬(거꾸로 읽어도 같은 단어)인지 확인하는 함수를 작성해줘.
+
+예외 처리(공백, 대소문자 무시)를 포함하고 주석을 상세히 달아줘.`,
     },
     {
-        category: '한국어 설명',
-        title: '비개발자 대상 요약',
-        prompt: `비개발자에게 "로컬 AI 모델은 내 컴퓨터에서 실행되어 데이터가 외부 서버로 전송되지 않을 수 있지만, 컴퓨터 성능과 모델 선택에 따라 응답 속도와 품질이 달라진다"는 내용을 3개의 짧은 글머리표로 설명하세요. 과장된 표현은 피하세요.`,
+        category: '구조화된 출력',
+        title: '빌드 오류 JSON 정리',
+        prompt: `아래 빌드 로그를 JSON 배열로 정리하세요. Markdown 코드 블록이나 설명은 쓰지 마세요. 각 객체는 file, severity, action 키만 가져야 합니다. severity는 error 또는 warning 중 하나이고, action은 한국어 20자 이하여야 합니다.\n\n- src/auth.ts:42 - error TS2322: Type 'string | undefined' is not assignable to type 'string'.\n- src/cache.ts:18 - warning: cache key has no expiration time.\n- tests/payment.test.ts:77 - error: expected status 201 but received 500.`,
     },
 ];
 
 const benchmarkSuites: BenchmarkSuite[] = [
     {
-        id: 'practical',
-        name: '실용 종합 · 8문항',
-        description: '지시 이행, 추론, 요약, 정보 정리, 코드, 한국어 설명을 고르게 확인합니다.',
+        id: 'development',
+        name: '개발·지시 이행 · 4문항',
+        description: '알고리즘 정확성, 엄격한 제약 준수, 코드 검토, 구조화된 출력을 확인합니다.',
+        templates: developmentBenchmarkTemplates,
+    },
+    {
+        id: 'document',
+        name: '문서·한국어 실무 · 4문항',
+        description: '회의록 요약, 일정 제약 검토, 비개발자 설명, 간결한 문체 제어를 확인합니다.',
         templates: [
-            ...quickBenchmarkTemplates.slice(0, 2),
             {
-                category: '요약',
-                title: '결정과 후속 작업 요약',
+                category: '회의록 요약',
+                title: '결정과 후속 작업 정리',
                 prompt: `다음 회의 메모를 바탕으로 "결정된 내용", "후속 작업", "주의할 점"을 각각 최대 2개의 글머리표로 정리하세요. 회의 메모에 없는 내용은 추측하지 마세요.\n\n- 모바일 앱 출시일은 6월 18일로 유지한다.\n- 결제 오류 재현 결과는 금요일 오전까지 공유한다.\n- 디자인팀은 새 아이콘 시안을 수요일에 전달한다.\n- 번역 검수가 늦어지면 일본어 출시는 다음 배포로 미룰 수 있다.`,
             },
             {
-                category: '정보 정리',
-                title: '표 형식 변환',
-                prompt: `아래 주문 정보를 Markdown 표로 바꾸세요. 열은 "주문 번호", "상태", "다음 조치" 세 개만 사용하세요.\n\n- A-104: 결제 완료, 오늘 출고 예정\n- B-208: 주소 오류, 고객 확인 필요\n- C-311: 배송 완료, 조치 없음`,
+                category: '업무 추론',
+                title: '배포 순서 제약 검토',
+                prompt: `다음 다섯 작업을 한 줄의 실행 순서로 배치하세요. 이어서 각 조건이 충족됐는지 글머리표 4개로 짧게 확인하세요.\n\n작업: A. API 명세 확정, B. 화면 연동, C. 데이터 이관, D. 통합 테스트, E. 운영 배포\n\n조건:\n- A는 B와 C보다 앞에 있어야 합니다.\n- B와 C는 모두 D보다 앞에 있어야 합니다.\n- D는 E보다 앞에 있어야 합니다.\n- C는 B보다 앞에 있어야 합니다.\n\n다른 설명이나 표는 작성하지 마세요.`,
             },
-            quickBenchmarkTemplates[2],
             {
-                category: '코드 검토',
-                title: '태그 정규화 함수',
-                prompt: `TypeScript로 normalizeTags(input: string): string[] 함수를 작성하세요. 쉼표로 나뉜 태그를 앞뒤 공백 제거 후 소문자로 바꾸고, 빈 값과 중복은 제외하되 처음 등장한 순서는 유지해야 합니다. 코드와 간단한 예시 2개만 제공하세요.`,
+                category: '한국어 설명',
+                title: '로컬 AI를 쉽게 설명',
+                prompt: `비개발자에게 "로컬 AI 모델은 내 컴퓨터에서 실행되어 데이터가 외부 서버로 전송되지 않을 수 있지만, 컴퓨터 성능과 모델 선택에 따라 응답 속도와 품질이 달라진다"는 내용을 설명하세요.\n\n조건:\n- 한국어 글머리표 3개만 사용\n- 각 글머리표는 한 문장\n- 과장된 표현과 확정적인 보안 보장은 피할 것`,
             },
-            quickBenchmarkTemplates[3],
             {
                 category: '문체 제어',
-                title: '간결한 위험 안내',
-                prompt: `제품 담당자에게 캐시 기능의 장점과 주의점을 안내하세요. 제목 한 줄과 글머리표 3개만 사용하고, 전문 용어는 처음 나올 때 쉬운 말로 풀어 쓰세요. 장점은 2개, 주의점은 1개여야 합니다.`,
-            },
-        ],
-    },
-    {
-        id: 'quick',
-        name: '빠른 확인 · 4문항',
-        description: '현재 연결과 모델의 반응 속도를 짧게 확인하는 핵심 질문 묶음입니다.',
-        templates: quickBenchmarkTemplates,
-    },
-    {
-        id: 'code',
-        name: '코드 집중 · 6문항',
-        description: 'TypeScript 작성, 수정, 테스트와 코드 설명 능력을 중심으로 확인합니다.',
-        templates: [
-            quickBenchmarkTemplates[2],
-            {
-                category: '코드 작성',
-                title: '안전한 그룹화',
-                prompt: `TypeScript로 groupBy<T>(items: T[], keyOf: (item: T) => string): Record<string, T[]> 함수를 작성하세요. 빈 배열도 안전하게 처리해야 합니다. 코드와 사용 예시 하나만 제공하세요.`,
-            },
-            {
-                category: '디버깅',
-                title: '중앙값 계산 수정',
-                prompt: `다음 TypeScript 함수의 문제를 고치세요. 원본 배열을 변경하면 안 되고, 숫자는 오름차순으로 정렬되어야 합니다. 코드와 문제 설명 한 문장만 제공하세요.\n\nfunction median(values: number[]): number {\n  const sorted = values.sort();\n  return sorted[Math.floor(sorted.length / 2)];\n}`,
-            },
-            {
-                category: '테스트',
-                title: '경계값 테스트 작성',
-                prompt: `formatPrice(amount: number): string 함수는 0 이상 금액을 한국 원화 표기 문자열로 반환합니다. Vitest 문법으로 0, 세 자리 수, 큰 수를 검증하는 테스트 3개를 작성하세요. 테스트 코드만 제공하세요.`,
-            },
-            {
-                category: '리팩터링',
-                title: '중복 제거 리팩터링',
-                prompt: `다음 배열에서 id가 중복된 항목을 제거하되 마지막 항목을 유지하는 TypeScript 함수를 작성하세요. 반환값의 순서는 원래 배열 순서를 유지해야 합니다. 코드와 설명 두 줄 이내로 제공하세요.\n\ntype Item = { id: string; value: string };`,
-            },
-            {
-                category: '코드 설명',
-                title: '비개발자 대상 설명',
-                prompt: `비개발자에게 "입력값 검증"이 왜 필요한지 온라인 주문 양식 예시를 들어 한국어 글머리표 3개로 설명하세요. 각 글머리표는 한 문장으로 제한하세요.`,
+                title: '간결한 캐시 위험 안내',
+                prompt: `제품 담당자에게 캐시 기능의 장점과 주의점을 안내하세요. 제목 한 줄과 글머리표 3개만 사용하세요. 전문 용어는 처음 나올 때 쉬운 말로 풀어 쓰고, 장점은 2개·주의점은 1개여야 합니다.`,
             },
         ],
     },
 ];
 
-const defaultBenchmarkSuiteID = 'practical';
+const defaultBenchmarkSuiteID = 'development';
 
 const benchmarkMetricOptions: Array<{key: BenchmarkMetric; label: string; direction: string}> = [
     {key: 'totalDuration', label: '총 응답 시간', direction: '낮을수록 빠름'},
@@ -145,6 +128,9 @@ export interface ModelBenchmarkSidebarState {
 
 interface ModelBenchmarkProps {
     profiles: SavedConnectionProfile[];
+    connectionAPIKey: string;
+    openRouterModelIDs: string[];
+    onOpenRouterModelIDsChange: (modelIDs: string[]) => void;
     onBusyChange: (busy: boolean) => void;
     onSidebarChange: (state: ModelBenchmarkSidebarState) => void;
     openBenchmarkID: string | null;
@@ -219,6 +205,189 @@ function formatBenchmarkDate(value: string): string {
 
 function benchmarkRecordLabel(summary: ModelBenchmarkSummary): string {
     return `${summary.model} · ${summary.profileName} · ${summary.suiteName} · ${formatBenchmarkDate(summary.updatedAt)}`;
+}
+
+function benchmarkStatusText(status: string): string {
+    if (status === 'completed') return '완료';
+    if (status === 'running') return '실행 중';
+    return status || '알 수 없음';
+}
+
+function formatReportDate(value: string | Date): string {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return new Intl.DateTimeFormat('ko-KR', {
+        year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).format(date);
+}
+
+function escapeHTML(value: string): string {
+    return value.replace(/[&<>"']/g, (character) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[character] || character);
+}
+
+function markdownCodeBlock(value: string): string {
+    const longestBacktickRun = Math.max(0, ...(value.match(/`+/g) || []).map((run) => run.length));
+    const fence = '`'.repeat(Math.max(3, longestBacktickRun + 1));
+    return `${fence}text\n${value || '내용 없음'}\n${fence}`;
+}
+
+function benchmarkCaseAnswer(benchmarkCase: ModelBenchmarkCase): string {
+    return benchmarkCase.content.trim() || benchmarkCase.error || '응답 내용이 없습니다.';
+}
+
+function renderBenchmarkMarkdownForHTML(benchmarkCase: ModelBenchmarkCase): string {
+    return renderToStaticMarkup(
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{benchmarkCaseAnswer(benchmarkCase)}</ReactMarkdown>,
+    );
+}
+
+function benchmarkCaseMetricLines(benchmarkCase: ModelBenchmarkCase): string[] {
+    const lines = [`상태: ${caseStatusText(benchmarkCase.status)}`];
+    if (benchmarkCase.metrics) {
+        lines.push(`총 응답 시간: ${formatDuration(benchmarkCase.metrics.totalDurationMs)}`);
+        if (benchmarkCase.metrics.firstTokenDurationMs > 0) {
+            lines.push(`첫 토큰 시간: ${formatDuration(benchmarkCase.metrics.firstTokenDurationMs)}`);
+        }
+    }
+    const speed = formatGenerationSpeed(benchmarkCase.usage, benchmarkCase.metrics);
+    if (speed) lines.push(`생성 속도: ${speed}`);
+    if (benchmarkCase.usage) {
+        lines.push(`토큰: 입력 ${benchmarkCase.usage.promptTokens} · 출력 ${benchmarkCase.usage.completionTokens} · 합계 ${benchmarkCase.usage.totalTokens}`);
+    }
+    return lines;
+}
+
+function benchmarkExportKindLabel(kind: BenchmarkExportKind): string {
+    return kind === 'analysis' ? '기록 분석' : '기록 비교';
+}
+
+function benchmarkExportFormatInfo(format: BenchmarkExportFormat): {label: string; extension: string; filterName: string} {
+    return format === 'html'
+        ? {label: 'HTML 보고서', extension: 'html', filterName: 'HTML 보고서'}
+        : {label: 'Markdown', extension: 'md', filterName: 'Markdown 문서'};
+}
+
+function benchmarkExportFilename(kind: BenchmarkExportKind, format: BenchmarkExportFormat): string {
+    const now = new Date();
+    const parts = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, '0'),
+        String(now.getDate()).padStart(2, '0'),
+        String(now.getHours()).padStart(2, '0'),
+        String(now.getMinutes()).padStart(2, '0'),
+        String(now.getSeconds()).padStart(2, '0'),
+    ];
+    const timestamp = `${parts.slice(0, 3).join('')}-${parts.slice(3).join('')}`;
+    return `agent-chat-benchmark-${kind}-${timestamp}.${benchmarkExportFormatInfo(format).extension}`;
+}
+
+function benchmarkMetadataMarkdown(benchmark: ModelBenchmark): string[] {
+    const summary = benchmarkSummary(benchmark);
+    return [
+        `- 모델: ${benchmark.model}`,
+        `- 연결 프로필: ${benchmark.profileName}`,
+        `- 서버 주소: ${benchmark.profileBaseURL}`,
+        `- 질문지: ${benchmark.suiteName}`,
+        `- 상태: ${benchmarkStatusText(benchmark.status)}`,
+        `- 완료 항목: ${summary.completedCaseCount}/${summary.caseCount}`,
+        `- 기록 시각: ${formatReportDate(benchmark.updatedAt)}`,
+    ];
+}
+
+function benchmarkMarkdownReport(kind: BenchmarkExportKind, records: ModelBenchmark[]): string {
+    const lines = [
+        `# Agent Chat 벤치마크 ${benchmarkExportKindLabel(kind)} 보고서`,
+        '',
+        `- 생성 시각: ${formatReportDate(new Date())}`,
+        `- 포함 기록: ${records.length}개`,
+        '',
+        '> 이 보고서에는 API 키와 인증 헤더가 포함되지 않습니다.',
+    ];
+
+    records.forEach((benchmark, recordIndex) => {
+        const recordLabel = kind === 'comparison' ? `기록 ${String.fromCharCode(65 + recordIndex)}` : '선택한 기록';
+        lines.push('', `## ${recordLabel} · ${benchmark.model}`, '', ...benchmarkMetadataMarkdown(benchmark));
+        (benchmark.cases || []).forEach((benchmarkCase, caseIndex) => {
+            lines.push(
+                '',
+                `### ${caseIndex + 1}. ${benchmarkCase.category} · ${benchmarkCase.title}`,
+                '',
+                '#### 질문',
+                markdownCodeBlock(benchmarkCase.prompt),
+                '',
+                `#### 모델 응답 · ${caseStatusText(benchmarkCase.status)}`,
+                markdownCodeBlock(benchmarkCaseAnswer(benchmarkCase)),
+                '',
+                '#### 측정값',
+                ...benchmarkCaseMetricLines(benchmarkCase).map((line) => `- ${line}`),
+            );
+        });
+    });
+    return `${lines.join('\n')}\n`;
+}
+
+function benchmarkHTMLReport(kind: BenchmarkExportKind, records: ModelBenchmark[]): string {
+    const title = `Agent Chat 벤치마크 ${benchmarkExportKindLabel(kind)} 보고서`;
+    const generatedAt = formatReportDate(new Date());
+    const recordHTML = records.map((benchmark, recordIndex) => {
+        const summary = benchmarkSummary(benchmark);
+        const recordLabel = kind === 'comparison' ? `기록 ${String.fromCharCode(65 + recordIndex)}` : '선택한 기록';
+        const metadata = [
+            ['모델', benchmark.model],
+            ['연결 프로필', benchmark.profileName],
+            ['서버 주소', benchmark.profileBaseURL],
+            ['질문지', benchmark.suiteName],
+            ['상태', benchmarkStatusText(benchmark.status)],
+            ['완료 항목', `${summary.completedCaseCount}/${summary.caseCount}`],
+            ['기록 시각', formatReportDate(benchmark.updatedAt)],
+        ].map(([label, value]) => `<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`).join('');
+        const cases = (benchmark.cases || []).map((benchmarkCase, caseIndex) => `
+            <article class="case">
+              <h3>${caseIndex + 1}. ${escapeHTML(benchmarkCase.category)} · ${escapeHTML(benchmarkCase.title)}</h3>
+              <section><h4>질문</h4><pre>${escapeHTML(benchmarkCase.prompt)}</pre></section>
+              <section><h4>모델 응답 · ${escapeHTML(caseStatusText(benchmarkCase.status))}</h4><div class="markdown-body">${renderBenchmarkMarkdownForHTML(benchmarkCase)}</div></section>
+              <ul>${benchmarkCaseMetricLines(benchmarkCase).map((line) => `<li>${escapeHTML(line)}</li>`).join('')}</ul>
+            </article>`).join('');
+        return `
+          <section class="record">
+            <header><p class="label">${escapeHTML(recordLabel)}</p><h2>${escapeHTML(benchmark.model)}</h2></header>
+            <dl>${metadata}</dl>
+            ${cases || '<p class="empty">저장된 테스트 항목이 없습니다.</p>'}
+          </section>`;
+    }).join('');
+
+    return `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHTML(title)}</title>
+  <style>
+    :root { color: #292925; background: #f6f6f3; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { max-width: 960px; margin: 0 auto; padding: 42px 24px 64px; line-height: 1.6; }
+    main > header { margin-bottom: 24px; } h1, h2, h3, h4, p { margin-top: 0; } h1 { font-size: 28px; } h2 { margin-bottom: 0; font-size: 21px; } h3 { font-size: 16px; } h4 { margin-bottom: 8px; color: #56778a; font-size: 12px; }
+    .generated, .notice, .label, .empty { color: #6f6f67; font-size: 13px; } .notice { padding: 12px 14px; border-left: 3px solid #7d9fb2; background: #edf5f9; }
+    .record { margin-top: 22px; padding: 24px; border: 1px solid #deded7; border-radius: 14px; background: #fff; box-shadow: 0 5px 20px rgba(31, 31, 27, .04); }
+    .label { margin-bottom: 4px; color: #56778a; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 20px 0 24px; } dl div { padding: 10px 12px; border-radius: 8px; background: #f7f7f4; } dt { color: #73736c; font-size: 11px; } dd { margin: 2px 0 0; overflow-wrap: anywhere; font-size: 13px; }
+    .case { padding: 18px 0; border-top: 1px solid #e6e6e0; } .case section + section { margin-top: 16px; } .case section > pre { margin: 0; padding: 14px; overflow-x: auto; border: 1px solid #e1e1db; border-radius: 8px; background: #fbfbf9; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; } ul { margin: 14px 0 0; padding-left: 20px; color: #5d5d56; font-size: 13px; }
+    .markdown-body > :first-child { margin-top: 0; } .markdown-body > :last-child { margin-bottom: 0; } .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 { margin: 1.5em 0 .55em; line-height: 1.35; color: #292925; } .markdown-body h1 { font-size: 22px; } .markdown-body h2 { font-size: 19px; } .markdown-body h3 { font-size: 16px; } .markdown-body p { margin: .75em 0; } .markdown-body ul, .markdown-body ol { margin: .75em 0; padding-left: 25px; color: inherit; font-size: inherit; } .markdown-body li + li { margin-top: .25em; } .markdown-body a { color: #26627d; } .markdown-body blockquote { margin: 1em 0; padding: .15em 1em; border-left: 3px solid #9ab9c8; color: #55554f; background: #f7fafb; } .markdown-body code { padding: .12em .34em; border-radius: 4px; background: #f0f0ec; font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; } .markdown-body pre { margin: 1em 0; padding: 14px; overflow-x: auto; border: 1px solid #e1e1db; border-radius: 8px; background: #fbfbf9; font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; } .markdown-body pre code { padding: 0; background: transparent; font: inherit; } .markdown-body table { display: block; max-width: 100%; margin: 1em 0; overflow-x: auto; border-collapse: collapse; } .markdown-body th, .markdown-body td { padding: 8px 10px; border: 1px solid #deded7; text-align: left; } .markdown-body th { background: #f5f5f1; } .markdown-body hr { margin: 1.5em 0; border: 0; border-top: 1px solid #deded7; } .markdown-body img { max-width: 100%; height: auto; }
+    @media print { body { max-width: none; padding: 20px; background: #fff; } .record { break-inside: avoid; box-shadow: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>${escapeHTML(title)}</h1>
+      <p class="generated">생성 시각: ${escapeHTML(generatedAt)} · 포함 기록: ${records.length}개</p>
+      <p class="notice">이 보고서에는 API 키와 인증 헤더가 포함되지 않습니다.</p>
+    </header>
+    ${recordHTML}
+  </main>
+</body>
+</html>`;
 }
 
 function hasSameTestConfiguration(left: ModelBenchmark, right: ModelBenchmark): boolean {
@@ -505,8 +674,44 @@ function BenchmarkVerticalChart({
     );
 }
 
+function BenchmarkExportActions({
+    kind,
+    exportingFormat,
+    exportMessage,
+    disabled: isDisabled,
+    onExport,
+}: {
+    kind: BenchmarkExportKind;
+    exportingFormat: BenchmarkExportFormat | null;
+    exportMessage: string;
+    disabled: boolean;
+    onExport: (format: BenchmarkExportFormat) => void;
+}) {
+    const disabled = isDisabled || exportingFormat !== null;
+    return (
+        <section className="benchmark-export-actions" aria-label={`${benchmarkExportKindLabel(kind)} 보고서 내보내기`}>
+            <div>
+                <span>보고서 내보내기</span>
+                <small>질문·답변 전문과 측정값을 저장합니다. API 키는 포함되지 않습니다.</small>
+            </div>
+            <div className="benchmark-export-buttons">
+                <button className="benchmark-export-button" type="button" onClick={() => onExport('html')} disabled={disabled}>
+                    {exportingFormat === 'html' ? '저장 창 여는 중…' : 'HTML 보고서'}
+                </button>
+                <button className="benchmark-export-button" type="button" onClick={() => onExport('markdown')} disabled={disabled}>
+                    {exportingFormat === 'markdown' ? '저장 창 여는 중…' : 'Markdown'}
+                </button>
+            </div>
+            {exportMessage && <p className="benchmark-export-status" role="status">{exportMessage}</p>}
+        </section>
+    );
+}
+
 function ModelBenchmarkWorkspace({
     profiles,
+    connectionAPIKey,
+    openRouterModelIDs,
+    onOpenRouterModelIDsChange,
     onBusyChange,
     onSidebarChange,
     openBenchmarkID,
@@ -518,6 +723,7 @@ function ModelBenchmarkWorkspace({
     const [apiKey, setAPIKey] = useState('');
     const [models, setModels] = useState<Model[]>([]);
     const [selectedModel, setSelectedModel] = useState('');
+    const [openRouterModelPickerOpen, setOpenRouterModelPickerOpen] = useState(false);
     const [loadingModels, setLoadingModels] = useState(false);
     const [benchmark, setBenchmark] = useState<ModelBenchmark | null>(null);
     const [view, setView] = useState<'home' | 'run'>('home');
@@ -543,15 +749,31 @@ function ModelBenchmarkWorkspace({
     const [isRunning, setIsRunning] = useState(false);
     const [cancelling, setCancelling] = useState(false);
     const [error, setError] = useState('');
+    const [exportingFormat, setExportingFormat] = useState<BenchmarkExportFormat | null>(null);
+    const [exportMessage, setExportMessage] = useState('');
 
     const benchmarkRef = useRef<ModelBenchmark | null>(null);
     const requestRef = useRef<{requestID: string; caseID: string} | null>(null);
     const runProfileRef = useRef<ConnectionProfile | null>(null);
+    const modelLoadPromiseRef = useRef<ReturnType<typeof ChatService.ListModels> | null>(null);
+    const modelLoadSequenceRef = useRef(0);
 
-    const selectedProfile = useMemo(
-        () => profiles.find((profile) => profile.id === profileID),
-        [profileID, profiles],
+    const benchmarkProfiles = useMemo(
+        () => profiles.some((profile) => profile.id === openRouterProfileID)
+            ? profiles
+            : [openRouterBenchmarkProfile, ...profiles],
+        [profiles],
     );
+    const selectedProfile = useMemo(
+        () => benchmarkProfiles.find((profile) => profile.id === profileID),
+        [benchmarkProfiles, profileID],
+    );
+    const usingOpenRouter = isOpenRouterURL(selectedProfile?.baseURL || '');
+
+    useEffect(() => {
+        if (!usingOpenRouter || models.length === 0 || openRouterModelIDs.length === 0) return;
+        setSelectedModel((current) => openRouterModelIDs.includes(current) ? current : '');
+    }, [models.length, openRouterModelIDs, usingOpenRouter]);
     const selectedSuite = useMemo(
         () => benchmarkSuites.find((suite) => suite.id === suiteID) || benchmarkSuites[0],
         [suiteID],
@@ -594,6 +816,12 @@ function ModelBenchmarkWorkspace({
         setLoadingHistory(true);
         void loadHistory();
     }, [historyRefreshKey]);
+
+    useEffect(() => {
+        if (connectionAPIKey) {
+            setAPIKey(connectionAPIKey);
+        }
+    }, [connectionAPIKey]);
 
     useEffect(() => {
         const availableIDs = completedHistory.map((item) => item.id);
@@ -822,24 +1050,57 @@ function ModelBenchmarkWorkspace({
         return listener;
     }, []);
 
-    async function loadModels() {
+    async function loadModels(): Promise<Model[]> {
         if (!selectedProfile) {
             setError('저장된 연결 프로필을 선택해 주세요.');
-            return;
+            return [];
         }
+        if (loadingModels) return [];
+        const operationID = ++modelLoadSequenceRef.current;
         try {
             setLoadingModels(true);
             setError('');
-            const loaded = await ChatService.ListModels({baseURL: selectedProfile.baseURL, apiKey});
+            const request = ChatService.ListModels({baseURL: selectedProfile.baseURL, apiKey});
+            modelLoadPromiseRef.current = request;
+            const loaded = await request;
+            if (operationID !== modelLoadSequenceRef.current) return [];
             const nextModels = loaded || [];
             setModels(nextModels);
-            setSelectedModel((current) => nextModels.some((model) => model.id === current) ? current : nextModels[0]?.id || '');
+            if (usingOpenRouter) {
+                setSelectedModel((current) => openRouterModelIDs.includes(current) ? current : '');
+            } else {
+                setSelectedModel((current) => nextModels.some((model) => model.id === current) ? current : nextModels[0]?.id || '');
+            }
+            return nextModels;
         } catch (reason) {
+            if (operationID !== modelLoadSequenceRef.current) return [];
             setModels([]);
             setSelectedModel('');
             setError(String(reason));
+            return [];
         } finally {
-            setLoadingModels(false);
+            if (operationID === modelLoadSequenceRef.current) {
+                modelLoadPromiseRef.current = null;
+                setLoadingModels(false);
+            }
+        }
+    }
+
+    function cancelModelLoad() {
+        const request = modelLoadPromiseRef.current;
+        if (!request) return;
+        modelLoadSequenceRef.current += 1;
+        modelLoadPromiseRef.current = null;
+        setLoadingModels(false);
+        setError('');
+        void request.cancel('사용자가 모델 목록 불러오기를 취소했습니다');
+    }
+
+    async function openOpenRouterModelPicker() {
+        if (isRunning || loadingModels) return;
+        const availableModels = models.length > 0 ? models : await loadModels();
+        if (availableModels.length > 0) {
+            setOpenRouterModelPickerOpen(true);
         }
     }
 
@@ -847,6 +1108,7 @@ function ModelBenchmarkWorkspace({
         setProfileID(nextProfileID);
         setModels([]);
         setSelectedModel('');
+        setOpenRouterModelPickerOpen(false);
         setError('');
     }
 
@@ -954,6 +1216,32 @@ function ModelBenchmarkWorkspace({
         setView('run');
     }
 
+    async function exportBenchmarkReport(kind: BenchmarkExportKind, format: BenchmarkExportFormat, records: ModelBenchmark[]) {
+        if (isRunning || exportingFormat || records.length === 0) return;
+        const formatInfo = benchmarkExportFormatInfo(format);
+        try {
+            setExportingFormat(format);
+            setExportMessage('');
+            setError('');
+            const path = await Dialogs.SaveFile({
+                Title: `${benchmarkExportKindLabel(kind)} ${formatInfo.label} 저장`,
+                ButtonText: '보고서 저장',
+                Filename: benchmarkExportFilename(kind, format),
+                Filters: [{DisplayName: formatInfo.filterName, Pattern: `*.${formatInfo.extension}`}],
+            });
+            if (!path) return;
+            const contents = format === 'html'
+                ? benchmarkHTMLReport(kind, records)
+                : benchmarkMarkdownReport(kind, records);
+            await ChatService.SaveBenchmarkExport(path, contents);
+            setExportMessage(`${formatInfo.label}를 저장했습니다.`);
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            setExportingFormat(null);
+        }
+    }
+
     function renderCase(benchmarkCase: ModelBenchmarkCase) {
         const speed = formatGenerationSpeed(benchmarkCase.usage, benchmarkCase.metrics);
         return (
@@ -995,8 +1283,12 @@ function ModelBenchmarkWorkspace({
                         <h1>{isRunning ? '벤치마크 실행 중' : stoppedRun ? '중단된 벤치마크' : '벤치마크 결과'}</h1>
                     </div>
                     <div className="benchmark-run-actions">
-                        {!isRunning && <button className="text-button danger" type="button" onClick={() => onRequestBenchmarkDelete(summary)}>기록 삭제</button>}
                         <button className="text-button" type="button" onClick={goHome}>모델 실험실 홈</button>
+                        {!isRunning && (
+                            <div className="benchmark-destructive-action">
+                                <button className="text-button danger" type="button" onClick={() => onRequestBenchmarkDelete(summary)}>기록 삭제</button>
+                            </div>
+                        )}
                     </div>
                 </header>
                 {error && <div className="error-banner" role="alert">{error}</div>}
@@ -1075,22 +1367,42 @@ function ModelBenchmarkWorkspace({
                         저장된 연결 프로필
                         <select value={profileID} onChange={(event) => changeProfile(event.target.value)} disabled={isRunning}>
                             <option value="">프로필을 선택해 주세요</option>
-                            {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                            {benchmarkProfiles.map((profile) => (
+                                <option key={profile.id} value={profile.id}>
+                                    {profile.id === openRouterProfileID ? `${profile.name} · 기본` : profile.name}
+                                </option>
+                            ))}
                         </select>
                     </label>
                     <label>
-                        API 키 <small>필요한 경우 입력 · 저장 안 됨</small>
+                        API 키 <small>연결 화면의 입력값을 자동 사용 · 저장 안 됨</small>
                         <input value={apiKey} onChange={(event) => setAPIKey(event.target.value)} type="password" autoComplete="off" placeholder="필요한 경우 입력" disabled={isRunning} />
                     </label>
-                    <button className="secondary-button" type="button" onClick={() => void loadModels()} disabled={!selectedProfile || loadingModels || isRunning}>
-                        {loadingModels ? '모델 불러오는 중…' : '모델 불러오기'}
-                    </button>
+                    <div className="connection-model-actions">
+                        <button className="secondary-button" type="button" onClick={() => void loadModels()} disabled={!selectedProfile || loadingModels || isRunning}>
+                            {loadingModels ? '모델 불러오는 중…' : '모델 불러오기'}
+                        </button>
+                        {loadingModels && <button className="model-load-cancel-button" type="button" onClick={cancelModelLoad}>취소</button>}
+                    </div>
                     <label>
                         측정할 모델
-                        <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} disabled={!models.length || isRunning}>
-                            {!models.length && <option value="">먼저 모델을 불러와 주세요</option>}
-                            {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
-                        </select>
+                        {usingOpenRouter ? (
+                            <div className="openrouter-model-selection">
+                                <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} disabled={!openRouterModelIDs.length || isRunning}>
+                                    <option value="">모델을 선택하세요</option>
+                                    {openRouterModelIDs.map((modelID) => <option key={modelID} value={modelID}>{modelID}</option>)}
+                                </select>
+                                <button type="button" onClick={() => void openOpenRouterModelPicker()} disabled={isRunning || loadingModels}>
+                                    {loadingModels ? '모델 불러오는 중…' : '모델 관리'}
+                                </button>
+                                <small>{openRouterModelIDs.length}개 선택됨</small>
+                            </div>
+                        ) : (
+                            <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} disabled={!models.length || isRunning}>
+                                {!models.length && <option value="">먼저 모델을 불러와 주세요</option>}
+                                {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
+                            </select>
+                        )}
                     </label>
                     <label>
                         질문지 프로필
@@ -1110,7 +1422,7 @@ function ModelBenchmarkWorkspace({
                         <p>테스트 제목과 질문은 실행 전에 자유롭게 바꿀 수 있으며, 실행한 질문지와 구성은 결과 기록에 함께 저장됩니다.</p>
                         <div className="benchmark-template-editor">
                             {caseDrafts.map((draft, index) => (
-                                <section key={index} className="benchmark-template-editor-item">
+                                <section key={`${suiteID}-${index}`} className="benchmark-template-editor-item">
                                     <div>
                                         <span className="benchmark-template-editor-category">{index + 1}. {draft.category}</span>
                                         <label className="benchmark-template-editor-title">
@@ -1168,9 +1480,18 @@ function ModelBenchmarkWorkspace({
                                 </div>
                                 <div className="benchmark-record-actions">
                                     <button className="text-button" type="button" onClick={() => showStoredBenchmark(analysisRecord)} disabled={isRunning}>상세 결과 보기</button>
-                                    <button className="text-button danger" type="button" onClick={() => onRequestBenchmarkDelete(benchmarkSummary(analysisRecord))} disabled={isRunning}>기록 삭제</button>
+                                    <div className="benchmark-destructive-action">
+                                        <button className="text-button danger" type="button" onClick={() => onRequestBenchmarkDelete(benchmarkSummary(analysisRecord))} disabled={isRunning}>기록 삭제</button>
+                                    </div>
                                 </div>
                             </section>
+                            <BenchmarkExportActions
+                                kind="analysis"
+                                exportingFormat={exportingFormat}
+                                exportMessage={exportMessage}
+                                disabled={isRunning}
+                                onExport={(format) => { void exportBenchmarkReport('analysis', format, [analysisRecord]); }}
+                            />
                             <BenchmarkVerticalChart
                                 primary={analysisRecord}
                                 metric={analysisMetric}
@@ -1266,6 +1587,15 @@ function ModelBenchmarkWorkspace({
                                         ? '같은 테스트 구성과 연결 프로필에서 실행된 직접 비교 가능한 기록입니다.'
                                         : '테스트 구성은 같지만 연결 프로필이 달라 서버 환경 차이가 포함될 수 있습니다.'}
                             </p>
+                            <BenchmarkExportActions
+                                kind="comparison"
+                                exportingFormat={exportingFormat}
+                                exportMessage={exportMessage}
+                                disabled={isRunning}
+                                onExport={(format) => {
+                                    void exportBenchmarkReport('comparison', format, [comparisonA, comparisonB, comparisonC].filter((record): record is ModelBenchmark => record !== null));
+                                }}
+                            />
                             <BenchmarkVerticalChart
                                 primary={comparisonA}
                                 secondary={comparisonB}
@@ -1279,6 +1609,14 @@ function ModelBenchmarkWorkspace({
                     )}
                 </section>
             )}
+            <OpenRouterModelPicker
+                open={openRouterModelPickerOpen}
+                models={models}
+                selectedModel={selectedModel}
+                selectedModelIDs={openRouterModelIDs}
+                onClose={() => setOpenRouterModelPickerOpen(false)}
+                onApply={onOpenRouterModelIDsChange}
+            />
         </section>
     );
 }

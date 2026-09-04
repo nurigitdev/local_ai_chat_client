@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -103,7 +105,10 @@ func (a *App) ListModels(profile ConnectionProfile) ([]Model, error) {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(a.applicationContext(), 15*time.Second)
+	// Hosted providers can return several hundred models. Allow enough time for
+	// an initial catalog request instead of treating a slow remote list as a
+	// failed connection.
+	ctx, cancel := context.WithTimeout(a.applicationContext(), 45*time.Second)
 	defer cancel()
 
 	models, err := client.ListModels(ctx)
@@ -176,6 +181,37 @@ func (a *App) OpenModelBenchmark(id string) (ModelBenchmark, error) {
 
 func (a *App) DeleteModelBenchmark(id string) error {
 	return a.benchmarks.Delete(id)
+}
+
+// SaveBenchmarkExport writes a user-selected benchmark report.
+func (a *App) SaveBenchmarkExport(path string, contents string) error {
+	return saveTextExport(path, contents)
+}
+
+// SaveChatShare writes a user-selected chat response share file.
+func (a *App) SaveChatShare(path string, contents string) error {
+	return saveTextExport(path, contents)
+}
+
+// saveTextExport only permits the two formats offered by the app. Keeping the
+// check in the backend prevents the frontend service from becoming an
+// arbitrary file writer.
+func saveTextExport(path string, contents string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("저장할 파일을 선택해 주세요")
+	}
+
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".html", ".md":
+	default:
+		return errors.New("HTML 또는 Markdown 파일로만 저장할 수 있습니다")
+	}
+
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		return fmt.Errorf("파일을 저장할 수 없습니다: %w", err)
+	}
+	return nil
 }
 
 func (a *App) StartChat(request ChatRequest) error {

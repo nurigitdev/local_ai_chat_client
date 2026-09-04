@@ -53,6 +53,30 @@ func TestListModels(t *testing.T) {
 	}
 }
 
+func TestListModelsKeepsOpenRouterAPIPath(t *testing.T) {
+	httpClient := testClient(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/v1/models" {
+			t.Fatalf("path = %q, want /api/v1/models", request.URL.Path)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer openrouter-key" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		return testResponse(http.StatusOK, "application/json", `{"data":[{"id":"openai/gpt-5"}]}`), nil
+	})
+
+	client, err := NewClient("https://openrouter.ai/api/v1", "openrouter-key", httpClient)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	models, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if want := []Model{{ID: "openai/gpt-5"}}; !reflect.DeepEqual(models, want) {
+		t.Fatalf("ListModels() = %#v, want %#v", models, want)
+	}
+}
+
 func TestStreamChat(t *testing.T) {
 	httpClient := testClient(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/v1/chat/completions" {

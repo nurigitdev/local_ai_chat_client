@@ -1,7 +1,8 @@
 import {ChangeEvent, FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState, WheelEvent} from 'react';
-import {Events} from '@wailsio/runtime';
+import {Dialogs, Events} from '@wailsio/runtime';
 import type {TextContent} from 'pdfjs-dist/types/src/display/api';
 import ReactMarkdown from 'react-markdown';
+import {renderToStaticMarkup} from 'react-dom/server';
 import remarkGfm from 'remark-gfm';
 import {App as ChatService} from '../bindings/github.com/taengson/agent-chat-desktop';
 import type {
@@ -17,10 +18,13 @@ import type {
     TokenUsage,
 } from '../bindings/github.com/taengson/agent-chat-desktop/models';
 import ModelBenchmarkWorkspace, {type ModelBenchmarkSidebarState} from './ModelBenchmark';
+import OpenRouterModelPicker, {isOpenRouterURL} from './OpenRouterModelPicker';
 import './App.css';
 
 type Role = 'user' | 'assistant';
 type MessageStatus = 'complete' | 'streaming' | 'cancelled' | 'failed';
+type ChatShareContentMode = 'question-answer' | 'answer';
+type ChatShareFormat = 'html' | 'markdown';
 
 interface UIMessage {
     id: string;
@@ -32,10 +36,19 @@ interface UIMessage {
     metrics?: ResponseMetrics;
 }
 
+interface ChatShareTarget {
+    answer: UIMessage;
+    question: UIMessage | null;
+}
+
 interface ModelOption {
     id: string;
     ownedBy?: string;
 }
+
+type ConnectionProfileOption = SavedConnectionProfile & {
+    isBuiltIn?: boolean;
+};
 
 interface ModelTokenUsage {
     promptTokens: number;
@@ -44,6 +57,12 @@ interface ModelTokenUsage {
 }
 
 const defaultBaseURL = 'http://localhost:8000';
+const openRouterProfile: ConnectionProfileOption = {
+    id: 'builtin-openrouter',
+    name: 'OpenRouter',
+    baseURL: 'https://openrouter.ai/api/v1',
+    isBuiltIn: true,
+};
 const attachmentFileExtensions = new Set([
     'txt', 'md', 'csv', 'json', 'jsonl', 'xml', 'yaml', 'yml', 'toml', 'ini', 'log',
     'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'go', 'py', 'java', 'kt', 'kts', 'rb',
@@ -125,6 +144,83 @@ function formatFileSize(bytes: number): string {
         return `${new Intl.NumberFormat('ko-KR', {maximumFractionDigits: 0}).format(bytes / 1_024)}KB`;
     }
     return `${new Intl.NumberFormat('ko-KR', {maximumFractionDigits: 1}).format(bytes / (1_024 * 1_024))}MB`;
+}
+
+function escapeHTML(value: string): string {
+    return value.replace(/[&<>"']/g, (character) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[character] || character);
+}
+
+function shareAttachmentLines(message: UIMessage | null): string[] {
+    if (!message?.attachments.length) return [];
+    return message.attachments.map((attachment) => `- ${attachment.name} (${formatFileSize(attachment.size)})${attachment.truncated ? ' · 일부 발췌본이 모델에 전달됨' : ''}`);
+}
+
+function formatShareTimestamp(): string {
+    return new Intl.DateTimeFormat('ko-KR', {
+        year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    }).format(new Date());
+}
+
+function chatShareFilename(mode: ChatShareContentMode, format: ChatShareFormat): string {
+    const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '').replace('T', '-');
+    return `agent-chat-${mode === 'question-answer' ? 'question-answer' : 'answer'}-${timestamp}.${format === 'html' ? 'html' : 'md'}`;
+}
+
+function chatShareMarkdown(target: ChatShareTarget, mode: ChatShareContentMode): string {
+    const lines = [
+        '# Agent Chat 공유',
+        '',
+        `- 저장 시각: ${formatShareTimestamp()}`,
+    ];
+    if (mode === 'question-answer' && target.question) {
+        lines.push('', '## 질문', '', target.question.content || '질문 내용이 없습니다.');
+        const attachmentLines = shareAttachmentLines(target.question);
+        if (attachmentLines.length > 0) {
+            lines.push('', '### 첨부 파일', '', ...attachmentLines, '', '> 첨부 문서 본문은 공유 파일에 포함하지 않았습니다.');
+        }
+    }
+    lines.push('', '## 응답', '', target.answer.content || '응답 내용이 없습니다.');
+    return `${lines.join('\n')}\n`;
+}
+
+function renderMarkdownForShare(content: string): string {
+    return renderToStaticMarkup(
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || '응답 내용이 없습니다.'}</ReactMarkdown>,
+    );
+}
+
+function chatShareHTML(target: ChatShareTarget, mode: ChatShareContentMode): string {
+    const questionHTML = mode === 'question-answer' && target.question ? (() => {
+        const attachments = shareAttachmentLines(target.question);
+        const attachmentHTML = attachments.length > 0
+            ? `<section><h3>첨부 파일</h3><ul>${attachments.map((item) => `<li>${escapeHTML(item)}</li>`).join('')}</ul><p class="notice">첨부 문서 본문은 공유 파일에 포함하지 않았습니다.</p></section>`
+            : '';
+        return `<section><h2>질문</h2><pre>${escapeHTML(target.question.content || '질문 내용이 없습니다.')}</pre>${attachmentHTML}</section>`;
+    })() : '';
+    return `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Chat 공유</title>
+  <style>
+    :root { color: #292925; background: #f6f6f3; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { max-width: 860px; margin: 0 auto; padding: 42px 24px 64px; line-height: 1.6; }
+    main { padding: 28px; border: 1px solid #deded7; border-radius: 14px; background: #fff; box-shadow: 0 6px 22px rgba(31,31,27,.05); }
+    h1, h2, h3, p { margin-top: 0; } h1 { margin-bottom: 4px; font-size: 26px; } h2 { margin-top: 28px; font-size: 18px; } h3 { margin: 18px 0 8px; color: #56778a; font-size: 13px; }
+    .date, .notice { color: #77776f; font-size: 13px; } section > pre { margin: 0; padding: 15px; overflow-wrap: anywhere; border: 1px solid #e1e1db; border-radius: 8px; background: #fbfbf9; white-space: pre-wrap; font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; } ul { margin: 0; padding-left: 20px; font-size: 13px; }
+    .markdown-body > :first-child { margin-top: 0; } .markdown-body > :last-child { margin-bottom: 0; } .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 { margin: 1.5em 0 .55em; line-height: 1.35; } .markdown-body h1 { font-size: 24px; } .markdown-body h2 { font-size: 20px; } .markdown-body h3 { font-size: 16px; color: #292925; } .markdown-body p { margin: .75em 0; } .markdown-body ul, .markdown-body ol { margin: .75em 0; padding-left: 25px; font-size: inherit; } .markdown-body li + li { margin-top: .25em; } .markdown-body a { color: #26627d; } .markdown-body blockquote { margin: 1em 0; padding: .15em 1em; border-left: 3px solid #9ab9c8; color: #55554f; background: #f7fafb; } .markdown-body code { padding: .12em .34em; border-radius: 4px; background: #f0f0ec; font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; } .markdown-body pre { margin: 1em 0; padding: 15px; overflow-x: auto; border: 1px solid #e1e1db; border-radius: 8px; background: #fbfbf9; font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; } .markdown-body pre code { padding: 0; background: transparent; font: inherit; } .markdown-body table { display: block; max-width: 100%; margin: 1em 0; overflow-x: auto; border-collapse: collapse; } .markdown-body th, .markdown-body td { padding: 8px 10px; border: 1px solid #deded7; text-align: left; } .markdown-body th { background: #f5f5f1; } .markdown-body hr { margin: 1.5em 0; border: 0; border-top: 1px solid #deded7; } .markdown-body img { max-width: 100%; height: auto; }
+    @media print { body { padding: 20px; background: #fff; } main { border: 0; box-shadow: none; } }
+  </style>
+</head>
+<body><main>
+  <header><h1>Agent Chat 공유</h1><p class="date">저장 시각: ${escapeHTML(formatShareTimestamp())}</p></header>
+  ${questionHTML}
+  <section><h2>응답</h2><div class="markdown-body">${renderMarkdownForShare(target.answer.content)}</div></section>
+</main></body>
+</html>`;
 }
 
 function textByteSize(content: string): number {
@@ -266,8 +362,18 @@ function sortConversations(conversations: ConversationSummary[]): ConversationSu
     return [...conversations].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-function sortSavedConnectionProfiles(profiles: SavedConnectionProfile[]): SavedConnectionProfile[] {
-    return [...profiles].sort((left, right) => left.name.localeCompare(right.name, 'ko-KR'));
+function sortSavedConnectionProfiles(profiles: ConnectionProfileOption[]): ConnectionProfileOption[] {
+    return [...profiles].sort((left, right) => {
+        if (left.isBuiltIn !== right.isBuiltIn) return left.isBuiltIn ? -1 : 1;
+        return left.name.localeCompare(right.name, 'ko-KR');
+    });
+}
+
+function withBuiltInConnectionProfiles(profiles: SavedConnectionProfile[]): ConnectionProfileOption[] {
+    return sortSavedConnectionProfiles([
+        openRouterProfile,
+        ...profiles.filter((profile) => profile.id !== openRouterProfile.id),
+    ]);
 }
 
 function formatUpdatedAt(value: string): string {
@@ -410,11 +516,13 @@ function App() {
     const [apiKey, setAPIKey] = useState('');
     const [models, setModels] = useState<ModelOption[]>([]);
     const [selectedModel, setSelectedModel] = useState('');
+    const [openRouterModelPickerOpen, setOpenRouterModelPickerOpen] = useState(false);
+    const [openRouterModelIDs, setOpenRouterModelIDs] = useState<string[]>([]);
     const [modelTokenUsage, setModelTokenUsage] = useState<Record<string, ModelTokenUsage>>({});
     const [loadingModels, setLoadingModels] = useState(false);
     const [connectionMessage, setConnectionMessage] = useState('서버 연결 전');
     const [connectionProfileReady, setConnectionProfileReady] = useState(false);
-    const [savedConnectionProfiles, setSavedConnectionProfiles] = useState<SavedConnectionProfile[]>([]);
+    const [savedConnectionProfiles, setSavedConnectionProfiles] = useState<ConnectionProfileOption[]>([openRouterProfile]);
     const [selectedSavedConnectionProfileID, setSelectedSavedConnectionProfileID] = useState('');
     const [connectionProfileName, setConnectionProfileName] = useState('');
     const [savingConnectionProfile, setSavingConnectionProfile] = useState(false);
@@ -423,7 +531,7 @@ function App() {
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const [conversationSearch, setConversationSearch] = useState('');
     const [conversationsExpanded, setConversationsExpanded] = useState(true);
-    const [connectionsExpanded, setConnectionsExpanded] = useState(true);
+    const [connectionSettingsOpen, setConnectionSettingsOpen] = useState(false);
     const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
     const [loadingConversations, setLoadingConversations] = useState(true);
     const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null);
@@ -436,6 +544,10 @@ function App() {
     const [busy, setBusy] = useState(false);
     const [cancelling, setCancelling] = useState(false);
     const [copiedMessageID, setCopiedMessageID] = useState<string | null>(null);
+    const [shareTarget, setShareTarget] = useState<ChatShareTarget | null>(null);
+    const [shareContentMode, setShareContentMode] = useState<ChatShareContentMode>('question-answer');
+    const [sharingFormat, setSharingFormat] = useState<ChatShareFormat | null>(null);
+    const [shareError, setShareError] = useState('');
     const [error, setError] = useState('');
     const [canScrollUp, setCanScrollUp] = useState(false);
     const [showScrollToLatest, setShowScrollToLatest] = useState(false);
@@ -456,6 +568,26 @@ function App() {
     const stopFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const copiedMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+    const modelLoadPromiseRef = useRef<ReturnType<typeof ChatService.ListModels> | null>(null);
+    const modelLoadSequenceRef = useRef(0);
+
+    const selectedSavedConnectionProfile = useMemo(
+        () => savedConnectionProfiles.find((profile) => profile.id === selectedSavedConnectionProfileID),
+        [savedConnectionProfiles, selectedSavedConnectionProfileID],
+    );
+    const usingBuiltInConnectionProfile = Boolean(selectedSavedConnectionProfile?.isBuiltIn);
+    const usingOpenRouter = isOpenRouterURL(baseURL);
+
+    const applyOpenRouterModelIDs = useCallback((modelIDs: string[]) => {
+        const nextModelIDs = Array.from(new Set(modelIDs.map((modelID) => modelID.trim()).filter(Boolean)));
+        setOpenRouterModelIDs(nextModelIDs);
+        setSelectedModel((current) => nextModelIDs.includes(current) ? current : '');
+    }, []);
+
+    useEffect(() => {
+        if (!usingOpenRouter || models.length === 0 || openRouterModelIDs.length === 0) return;
+        setSelectedModel((current) => openRouterModelIDs.includes(current) ? current : '');
+    }, [models.length, openRouterModelIDs, usingOpenRouter]);
 
     const handleBenchmarkBusyChange = useCallback((nextBusy: boolean) => {
         setBenchmarkBusy(nextBusy);
@@ -656,6 +788,7 @@ function App() {
         setBaseURL(value);
         setModels([]);
         setSelectedModel('');
+        setOpenRouterModelPickerOpen(false);
         setModelTokenUsage({});
         setConnectionMessage('서버 주소가 변경되었습니다. 모델을 다시 불러와 주세요');
     }
@@ -671,11 +804,13 @@ function App() {
         setConnectionProfileName(profile.name);
         updateBaseURL(profile.baseURL);
         setAPIKey('');
-        setConnectionMessage('프로필을 선택했습니다. API 키를 입력한 뒤 모델을 불러와 주세요');
+        setConnectionMessage(profile.isBuiltIn
+            ? 'OpenRouter 기본 프로필을 선택했습니다. API 키를 입력한 뒤 모델을 불러와 주세요'
+            : '프로필을 선택했습니다. API 키를 입력한 뒤 모델을 불러와 주세요');
     }
 
     async function saveNamedConnectionProfile() {
-        if (busy || savingConnectionProfile) {
+        if (busy || savingConnectionProfile || usingBuiltInConnectionProfile) {
             return;
         }
         if (!canSaveConnectionProfile(baseURL)) {
@@ -707,7 +842,7 @@ function App() {
 
     function requestSavedConnectionProfileDelete() {
         const profile = savedConnectionProfiles.find((item) => item.id === selectedSavedConnectionProfileID);
-        if (!profile || busy || savingConnectionProfile) {
+        if (!profile || profile.isBuiltIn || busy || savingConnectionProfile) {
             return;
         }
         setConnectionProfileToDelete(profile);
@@ -776,7 +911,7 @@ function App() {
                 if (cancelled) {
                     return;
                 }
-                setSavedConnectionProfiles(sortSavedConnectionProfiles(profiles || []));
+                setSavedConnectionProfiles(withBuiltInConnectionProfiles(profiles || []));
                 if (profile.baseURL) {
                     setBaseURL(profile.baseURL);
                     setConnectionMessage('저장된 서버 주소를 불러왔습니다. 모델을 불러와 선택해 주세요');
@@ -998,26 +1133,59 @@ function App() {
         setShowScrollToLatest(false);
     }
 
-    async function loadModels() {
+    async function loadModels(): Promise<ModelOption[]> {
+        if (loadingModels) return [];
+        const operationID = ++modelLoadSequenceRef.current;
         setLoadingModels(true);
         setError('');
         setConnectionMessage('연결 확인 중…');
         try {
-            const result = await ChatService.ListModels({baseURL, apiKey});
+            const request = ChatService.ListModels({baseURL, apiKey});
+            modelLoadPromiseRef.current = request;
+            const result = await request;
+            if (operationID !== modelLoadSequenceRef.current) return [];
             const nextModels = (result || []) as ModelOption[];
             setModels(nextModels);
             setModelTokenUsage({});
-            setSelectedModel((current) =>
-                nextModels.some((model) => model.id === current) ? current : (nextModels[0]?.id || ''),
-            );
+            if (isOpenRouterURL(baseURL)) {
+                setSelectedModel((current) => openRouterModelIDs.includes(current) ? current : '');
+            } else {
+                setSelectedModel((current) =>
+                    nextModels.some((model) => model.id === current) ? current : (nextModels[0]?.id || ''),
+                );
+            }
             setConnectionMessage(nextModels.length > 0 ? `${nextModels.length}개 모델 연결됨` : '사용 가능한 모델 없음');
+            return nextModels;
         } catch (reason) {
+            if (operationID !== modelLoadSequenceRef.current) return [];
             setModels([]);
             setSelectedModel('');
             setConnectionMessage('연결 실패');
             setError(String(reason));
+            return [];
         } finally {
-            setLoadingModels(false);
+            if (operationID === modelLoadSequenceRef.current) {
+                modelLoadPromiseRef.current = null;
+                setLoadingModels(false);
+            }
+        }
+    }
+
+    function cancelModelLoad() {
+        const request = modelLoadPromiseRef.current;
+        if (!request) return;
+        modelLoadSequenceRef.current += 1;
+        modelLoadPromiseRef.current = null;
+        setLoadingModels(false);
+        setConnectionMessage('모델 불러오기를 취소했습니다');
+        void request.cancel('사용자가 모델 목록 불러오기를 취소했습니다');
+    }
+
+    async function openOpenRouterModelPicker() {
+        if (busy || loadingModels) return;
+        const availableModels = models.length > 0 ? models : await loadModels();
+        if (availableModels.length > 0) {
+            setOpenRouterModelPickerOpen(true);
         }
     }
 
@@ -1173,6 +1341,43 @@ function App() {
         }
     }
 
+    function requestChatShare(messageID: string) {
+        const answerIndex = messagesRef.current.findIndex((message) => message.id === messageID);
+        const answer = answerIndex >= 0 ? messagesRef.current[answerIndex] : null;
+        if (!answer || answer.role !== 'assistant' || !answer.content) return;
+        const question = messagesRef.current.slice(0, answerIndex).reverse().find((message) => message.role === 'user') || null;
+        setShareTarget({answer, question});
+        setShareContentMode(question ? 'question-answer' : 'answer');
+        setShareError('');
+    }
+
+    async function saveChatShare(format: ChatShareFormat) {
+        const target = shareTarget;
+        if (!target || sharingFormat) return;
+        const extension = format === 'html' ? 'html' : 'md';
+        const formatLabel = format === 'html' ? 'HTML' : 'Markdown';
+        try {
+            setSharingFormat(format);
+            setShareError('');
+            const path = await Dialogs.SaveFile({
+                Title: `${formatLabel} 공유 파일 저장`,
+                ButtonText: '저장',
+                Filename: chatShareFilename(shareContentMode, format),
+                Filters: [{DisplayName: `${formatLabel} 파일`, Pattern: `*.${extension}`}],
+            });
+            if (!path) return;
+            const contents = format === 'html'
+                ? chatShareHTML(target, shareContentMode)
+                : chatShareMarkdown(target, shareContentMode);
+            await ChatService.SaveChatShare(path, contents);
+            setShareTarget(null);
+        } catch (reason) {
+            setShareError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            setSharingFormat(null);
+        }
+    }
+
     async function stopGeneration() {
         const requestID = activeRequestRef.current;
         const assistantID = assistantMessageRef.current;
@@ -1209,6 +1414,143 @@ function App() {
         }
     }
 
+    function renderConnectionSettings() {
+        return (
+            <main className="connection-panel" aria-label="연결 설정">
+                <header className="connection-panel-header">
+                    <div>
+                        <span className="eyebrow">CONNECTION SETTINGS</span>
+                        <h1>모델 연결 설정</h1>
+                        <p>연결 프로필, API 키, 사용할 모델을 이 화면에서 관리합니다.</p>
+                    </div>
+                    <button className="secondary-button connection-return-button" type="button" onClick={() => setConnectionSettingsOpen(false)} disabled={busy}>
+                        홈으로 돌아가기
+                    </button>
+                </header>
+                {error && <div className="error-banner" role="alert">{error}</div>}
+                <div className="connection-settings-grid">
+                    <section className="connection-settings-card">
+                        <div className="connection-settings-card-heading">
+                            <span>1</span>
+                            <div>
+                                <h2>연결 프로필</h2>
+                                <p>서버 주소는 프로필로 저장할 수 있고 API 키는 저장되지 않습니다.</p>
+                            </div>
+                        </div>
+                        <label>
+                            연결 프로필 <small>API 키 제외</small>
+                            <select
+                                value={selectedSavedConnectionProfileID}
+                                onChange={(event) => selectSavedConnectionProfile(event.target.value)}
+                                disabled={busy || savingConnectionProfile}
+                            >
+                                <option value="">새 연결 프로필</option>
+                                {savedConnectionProfiles.filter((profile) => profile.isBuiltIn).map((profile) => (
+                                    <option key={profile.id} value={profile.id}>{profile.name} · 기본</option>
+                                ))}
+                                <optgroup label="저장된 프로필">
+                                    {savedConnectionProfiles.filter((profile) => !profile.isBuiltIn).map((profile) => (
+                                        <option key={profile.id} value={profile.id}>{profile.name}</option>
+                                    ))}
+                                </optgroup>
+                            </select>
+                        </label>
+                        <label>
+                            프로필 이름
+                            <input
+                                value={connectionProfileName}
+                                onChange={(event) => setConnectionProfileName(event.target.value)}
+                                placeholder="예: 로컬 vLLM"
+                                disabled={busy || savingConnectionProfile || usingBuiltInConnectionProfile}
+                            />
+                        </label>
+                        <label>
+                            서버 URL
+                            <input
+                                value={baseURL}
+                                onChange={(event) => updateBaseURL(event.target.value)}
+                                placeholder="http://localhost:8000"
+                                spellCheck={false}
+                                disabled={busy || savingConnectionProfile || usingBuiltInConnectionProfile}
+                            />
+                        </label>
+                        {!usingBuiltInConnectionProfile && (
+                            <button
+                                className={`profile-save-button ${selectedSavedConnectionProfileID ? 'update' : 'create'}`}
+                                type="button"
+                                onClick={() => void saveNamedConnectionProfile()}
+                                disabled={busy || savingConnectionProfile || !connectionProfileName.trim()}
+                            >
+                                {savingConnectionProfile ? '저장 중…' : selectedSavedConnectionProfileID ? '프로필 업데이트' : '프로필 저장'}
+                            </button>
+                        )}
+                        {selectedSavedConnectionProfileID && !usingBuiltInConnectionProfile && (
+                            <button
+                                className="profile-delete-button"
+                                type="button"
+                                onClick={requestSavedConnectionProfileDelete}
+                                disabled={busy || savingConnectionProfile}
+                            >
+                                프로필 삭제
+                            </button>
+                        )}
+                    </section>
+                    <section className="connection-settings-card">
+                        <div className="connection-settings-card-heading">
+                            <span>2</span>
+                            <div>
+                                <h2>모델 선택</h2>
+                                <p>현재 연결에서 사용할 모델을 불러와 선택합니다.</p>
+                            </div>
+                        </div>
+                        <label>
+                            API 키 <small>{usingBuiltInConnectionProfile ? 'OpenRouter · 저장 안 됨' : '선택'}</small>
+                            <input
+                                value={apiKey}
+                                onChange={(event) => setAPIKey(event.target.value)}
+                                placeholder={usingBuiltInConnectionProfile ? 'OpenRouter API 키 입력' : '필요한 경우 입력'}
+                                type="password"
+                                autoComplete="off"
+                                disabled={busy}
+                            />
+                        </label>
+                        <div className="connection-model-actions">
+                            <button className="secondary-button" type="button" onClick={loadModels} disabled={loadingModels || busy}>
+                                {loadingModels ? '모델 불러오는 중…' : '모델 불러오기'}
+                            </button>
+                            {loadingModels && <button className="model-load-cancel-button" type="button" onClick={cancelModelLoad}>취소</button>}
+                        </div>
+                        <p className="connection-message">{connectionMessage}</p>
+                        <label>
+                            <span className="model-select-heading">
+                                <span>사용할 모델</span>
+                                {selectedModel && <span className="model-token-usage">누적 {formatTokenCount(modelTokenUsage[selectedModel]?.totalTokens || 0)} 토큰</span>}
+                            </span>
+                            {usingOpenRouter ? (
+                                <div className="openrouter-model-selection">
+                                    <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} disabled={!openRouterModelIDs.length || busy}>
+                                        <option value="">모델을 선택하세요</option>
+                                        {openRouterModelIDs.map((modelID) => <option key={modelID} value={modelID}>{modelID}</option>)}
+                                    </select>
+                                    <button type="button" onClick={() => void openOpenRouterModelPicker()} disabled={busy || loadingModels}>
+                                        {loadingModels ? '모델 불러오는 중…' : '모델 관리'}
+                                    </button>
+                                    <small>{openRouterModelIDs.length}개 선택됨</small>
+                                </div>
+                            ) : (
+                                <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} disabled={!models.length || busy}>
+                                    {!models.length && <option value="">모델을 불러와 주세요</option>}
+                                    {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
+                                </select>
+                            )}
+                        </label>
+                        <p className="privacy-note">OpenRouter 기본 프로필은 서버 URL만 미리 설정합니다. 다른 프로필도 이름과 서버 URL만 저장하며, 모델과 API 키는 저장하지 않습니다.</p>
+                    </section>
+                </div>
+            </main>
+        );
+    }
+
     return (
         <div className="app-shell">
             <aside className="sidebar">
@@ -1224,7 +1566,10 @@ function App() {
                     <button
                         className={workspace === 'chat' ? 'active' : ''}
                         type="button"
-                        onClick={() => setWorkspace('chat')}
+                        onClick={() => {
+                            setWorkspace('chat');
+                            setConnectionSettingsOpen(false);
+                        }}
                         disabled={busy || benchmarkBusy}
                     >
                         채팅
@@ -1232,7 +1577,10 @@ function App() {
                     <button
                         className={workspace === 'benchmark' ? 'active' : ''}
                         type="button"
-                        onClick={() => setWorkspace('benchmark')}
+                        onClick={() => {
+                            setWorkspace('benchmark');
+                            setConnectionSettingsOpen(false);
+                        }}
                         disabled={busy || benchmarkBusy}
                     >
                         모델 실험실
@@ -1288,115 +1636,16 @@ function App() {
                     )}
                 </section>
 
-                <section className={`settings ${connectionsExpanded ? '' : 'collapsed'}`} aria-label="연결">
-                    <div className="section-heading">
-                        <button
-                            className="section-toggle"
-                            type="button"
-                            onClick={() => setConnectionsExpanded((current) => !current)}
-                            aria-expanded={connectionsExpanded}
-                            aria-controls="connection-content"
-                        >
-                            <span>연결</span>
-                            <span className="section-toggle-indicator" aria-hidden="true">⌄</span>
-                        </button>
-                        <span className={`connection-dot ${models.length ? 'online' : ''}`} />
-                    </div>
-                    {connectionsExpanded && (
-                        <div className="collapsible-content" id="connection-content">
-
-                            <label>
-                                저장된 프로필 <small>API 키 제외</small>
-                                <select
-                                    value={selectedSavedConnectionProfileID}
-                                    onChange={(event) => selectSavedConnectionProfile(event.target.value)}
-                                    disabled={busy || savingConnectionProfile}
-                                >
-                                    <option value="">새 연결 프로필</option>
-                                    {savedConnectionProfiles.map((profile) => (
-                                        <option key={profile.id} value={profile.id}>{profile.name}</option>
-                                    ))}
-                                </select>
-                            </label>
-
-                            <label>
-                                프로필 이름
-                                <input
-                                    value={connectionProfileName}
-                                    onChange={(event) => setConnectionProfileName(event.target.value)}
-                                    placeholder="예: 로컬 vLLM"
-                                    disabled={busy || savingConnectionProfile}
-                                />
-                            </label>
-
-                            <label>
-                                서버 URL
-                                <input
-                                    value={baseURL}
-                                    onChange={(event) => updateBaseURL(event.target.value)}
-                                    placeholder="http://localhost:8000"
-                                    spellCheck={false}
-                                />
-                            </label>
-
-                            <button
-                                className={`profile-save-button ${selectedSavedConnectionProfileID ? 'update' : 'create'}`}
-                                type="button"
-                                onClick={() => void saveNamedConnectionProfile()}
-                                disabled={busy || savingConnectionProfile || !connectionProfileName.trim()}
-                            >
-                                {savingConnectionProfile ? '저장 중…' : selectedSavedConnectionProfileID ? '프로필 업데이트' : '프로필 저장'}
-                            </button>
-                            {selectedSavedConnectionProfileID && (
-                                <button
-                                    className="profile-delete-button"
-                                    type="button"
-                                    onClick={requestSavedConnectionProfileDelete}
-                                    disabled={busy || savingConnectionProfile}
-                                >
-                                    프로필 삭제
-                                </button>
-                            )}
-
-                            <label>
-                                API 키 <small>선택</small>
-                                <input
-                                    value={apiKey}
-                                    onChange={(event) => setAPIKey(event.target.value)}
-                                    placeholder="필요한 경우 입력"
-                                    type="password"
-                                    autoComplete="off"
-                                />
-                            </label>
-
-                            <button className="secondary-button" onClick={loadModels} disabled={loadingModels || busy}>
-                                {loadingModels ? '확인 중…' : '모델 불러오기'}
-                            </button>
-                            <p className="connection-message">{connectionMessage}</p>
-
-                            <label>
-                                <span className="model-select-heading">
-                                    <span>모델</span>
-                                    {selectedModel && (
-                                        <span className="model-token-usage">
-                                            누적 {formatTokenCount(modelTokenUsage[selectedModel]?.totalTokens || 0)} 토큰
-                                        </span>
-                                    )}
-                                </span>
-                                <select
-                                    value={selectedModel}
-                                    onChange={(event) => setSelectedModel(event.target.value)}
-                                    disabled={!models.length || busy}
-                                >
-                                    {!models.length && <option value="">모델을 불러와 주세요</option>}
-                                    {models.map((model) => <option key={model.id} value={model.id}>{model.id}</option>)}
-                                </select>
-                            </label>
-
-                            <p className="privacy-note">프로필에는 이름과 서버 URL만 저장됩니다. 모델과 API 키는 저장하지 않으며 앱을 다시 열면 모델을 불러오고 API 키를 다시 입력해야 합니다.</p>
-                        </div>
-                    )}
-                </section>
+                <button
+                    className={`sidebar-connection-button ${connectionSettingsOpen ? 'active' : ''}`}
+                    type="button"
+                    onClick={() => setConnectionSettingsOpen(true)}
+                    disabled={busy}
+                >
+                    <span className={`connection-dot ${models.length ? 'online' : ''}`} />
+                    <span>연결 설정</span>
+                    <small>{selectedModel || '모델을 선택하세요'}</small>
+                </button>
                     </>
                 ) : (
                     <section className="benchmark-sidebar">
@@ -1432,7 +1681,7 @@ function App() {
                                 ))}
                             </div>
                         </section>
-                        <small>저장된 프로필 {savedConnectionProfiles.length}개</small>
+                        <small>연결 프로필 {savedConnectionProfiles.length}개 · 기본 1개 포함</small>
                     </section>
                 )}
             </aside>
@@ -1441,6 +1690,9 @@ function App() {
                 <main className="benchmark-panel">
                     <ModelBenchmarkWorkspace
                         profiles={savedConnectionProfiles}
+                        connectionAPIKey={apiKey}
+                        openRouterModelIDs={openRouterModelIDs}
+                        onOpenRouterModelIDsChange={applyOpenRouterModelIDs}
                         onBusyChange={handleBenchmarkBusyChange}
                         onSidebarChange={handleBenchmarkSidebarChange}
                         openBenchmarkID={benchmarkOpenRequestID}
@@ -1449,6 +1701,8 @@ function App() {
                         onRequestBenchmarkDelete={requestBenchmarkDelete}
                     />
                 </main>
+            ) : connectionSettingsOpen ? (
+                renderConnectionSettings()
             ) : (
             <main className="chat-panel" onWheel={handleChatPanelWheel}>
                 <header className="chat-header">
@@ -1500,7 +1754,7 @@ function App() {
                         <div className="empty-state">
                             <div className="empty-symbol">AI</div>
                             <h1>로컬 모델과 대화를 시작하세요</h1>
-                            <p>왼쪽에서 서버를 연결하고 모델을 선택한 뒤 메시지를 입력하세요.</p>
+                            <p>왼쪽의 연결 설정에서 서버와 모델을 선택한 뒤 메시지를 입력하세요.</p>
                         </div>
                     ) : (
                         <div className="message-column">
@@ -1540,6 +1794,11 @@ function App() {
                                                 <button className="message-action-button" type="button" onClick={() => void copyMessage(message)}>
                                                     {copiedMessageID === message.id ? '복사됨' : '복사'}
                                                 </button>
+                                                {message.role === 'assistant' && message.status === 'complete' && (
+                                                    <button className="message-action-button" type="button" onClick={() => requestChatShare(message.id)}>
+                                                        공유
+                                                    </button>
+                                                )}
                                                 {message.role === 'assistant' && index === messages.length - 1 && !busy && selectedModel && (
                                                     <button className="message-action-button" type="button" onClick={() => void regenerateResponse(message.id)}>
                                                         다시 생성
@@ -1662,7 +1921,7 @@ function App() {
                                 취소
                             </button>
                             <button type="button" className="dialog-delete-button" onClick={() => void confirmBenchmarkDelete()} disabled={deletingBenchmark}>
-                                {deletingBenchmark ? '삭제 중…' : '삭제'}
+                                {deletingBenchmark ? '삭제 중…' : '삭제 확인'}
                             </button>
                         </div>
                     </section>
@@ -1684,6 +1943,58 @@ function App() {
                     </section>
                 </div>
             )}
+            {shareTarget && (
+                <div className="dialog-backdrop" role="presentation">
+                    <section className="share-dialog" role="dialog" aria-modal="true" aria-labelledby="chat-share-title">
+                        <h2 id="chat-share-title">응답 공유 저장</h2>
+                        <p>저장할 내용과 파일 형식을 선택하세요.</p>
+                        <section className="share-content-choice" aria-label="공유할 내용 선택">
+                            <span>포함할 내용</span>
+                            <div>
+                                <button
+                                    className={shareContentMode === 'question-answer' ? 'active' : ''}
+                                    type="button"
+                                    onClick={() => setShareContentMode('question-answer')}
+                                    disabled={!shareTarget.question || sharingFormat !== null}
+                                >
+                                    질문 + 응답
+                                </button>
+                                <button
+                                    className={shareContentMode === 'answer' ? 'active' : ''}
+                                    type="button"
+                                    onClick={() => setShareContentMode('answer')}
+                                    disabled={sharingFormat !== null}
+                                >
+                                    응답만
+                                </button>
+                            </div>
+                            {shareTarget.question?.attachments.length ? (
+                                <small>질문에 첨부된 파일은 이름과 크기만 표시하며 문서 본문은 포함하지 않습니다.</small>
+                            ) : (
+                                <small>HTML은 읽기 좋고, Markdown은 편집하거나 다른 AI에 전달하기 좋습니다.</small>
+                            )}
+                        </section>
+                        {shareError && <p className="dialog-error" role="alert">{shareError}</p>}
+                        <div className="share-dialog-actions">
+                            <button className="dialog-cancel-button" type="button" onClick={() => setShareTarget(null)} disabled={sharingFormat !== null}>취소</button>
+                            <button className="share-save-button html" type="button" onClick={() => void saveChatShare('html')} disabled={sharingFormat !== null}>
+                                {sharingFormat === 'html' ? '저장 중…' : 'HTML로 저장'}
+                            </button>
+                            <button className="share-save-button markdown" type="button" onClick={() => void saveChatShare('markdown')} disabled={sharingFormat !== null}>
+                                {sharingFormat === 'markdown' ? '저장 중…' : 'Markdown으로 저장'}
+                            </button>
+                        </div>
+                    </section>
+                </div>
+            )}
+            <OpenRouterModelPicker
+                open={openRouterModelPickerOpen}
+                models={models}
+                selectedModel={selectedModel}
+                selectedModelIDs={openRouterModelIDs}
+                onClose={() => setOpenRouterModelPickerOpen(false)}
+                onApply={applyOpenRouterModelIDs}
+            />
         </div>
     );
 }
