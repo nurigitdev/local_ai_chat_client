@@ -491,12 +491,29 @@ function formatRelativePercent(value: number): string {
 }
 
 function relativeComparisonSummary(metric: BenchmarkMetric, values: Array<{label: string; value?: number}>): string {
-    const percentages = values.map((item) => ({
-        label: item.label,
-        value: relativeBenchmarkValue(metric, item.value, values.map((candidate) => candidate.value)),
-    })).filter((item): item is {label: string; value: number} => item.value !== undefined);
-    if (percentages.length === 0) return '측정값 없음';
-    return percentages.map((item) => `${item.label} ${formatRelativePercent(item.value)}`).join(' · ');
+    const measured = values.filter((item): item is {label: string; value: number} => item.value !== undefined && item.value > 0);
+    if (measured.length === 0) return '측정값 없음';
+    if (measured.length === 1) return `${measured[0].label}만 측정됨`;
+
+    const higherIsBetter = metric === 'generationSpeed' || metric === 'outputTokens';
+    const bestValue = higherIsBetter
+        ? Math.max(...measured.map((item) => item.value))
+        : Math.min(...measured.map((item) => item.value));
+    const winners = measured.filter((item) => item.value === bestValue);
+    const label = winners.map((item) => item.label).join('·');
+    const result = metric === 'outputTokens' ? '많음' : '빠름';
+
+    if (winners.length > 1) return `${label}가 공동으로 가장 ${result}`;
+
+    const advantage = measured
+        .filter((item) => item.value !== bestValue)
+        .map((item) => {
+            const percentage = higherIsBetter
+                ? (bestValue - item.value) / item.value * 100
+                : (item.value - bestValue) / item.value * 100;
+            return `${item.label}보다 ${formatRelativePercent(percentage)}`;
+        });
+    return `${label}가 ${advantage.join(', ')} ${result}`;
 }
 
 function relativeScaleDescription(metric: BenchmarkMetric): string {
@@ -977,6 +994,7 @@ function ModelBenchmarkWorkspace({
                 profile,
                 model: saved.model,
                 messages: [{role: 'user', content: nextCase.prompt}],
+                benchmark: true,
             });
         } catch (reason) {
             requestRef.current = null;

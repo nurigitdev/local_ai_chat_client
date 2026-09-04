@@ -32,6 +32,7 @@ export interface ChatRequest {
     "profile": ConnectionProfile;
     "model": string;
     "messages": ChatMessage[] | null;
+    "benchmark": boolean;
 }
 
 export interface ConnectionProfile {

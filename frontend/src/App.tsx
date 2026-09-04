@@ -1217,6 +1217,7 @@ function App() {
                 messages: requestMessages
                     .map((message) => ({role: message.role, content: messageContentForModel(message)}))
                     .filter((message) => message.role === 'user' || message.content !== ''),
+                benchmark: false,
             };
             await ChatService.StartChat(request);
         } catch (reason) {

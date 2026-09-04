@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,122 @@ import (
 )
 
 const chatEventName = "chat:event"
+
+const (
+	benchmarkFirstOutputTimeout = 10 * time.Minute
+	benchmarkOutputIdleTimeout  = 60 * time.Second
+)
+
+type benchmarkStreamTimeoutPolicy struct {
+	firstOutputTimeout time.Duration
+	outputIdleTimeout  time.Duration
+	checkInterval      time.Duration
+}
+
+var defaultBenchmarkStreamTimeoutPolicy = benchmarkStreamTimeoutPolicy{
+	firstOutputTimeout: benchmarkFirstOutputTimeout,
+	outputIdleTimeout:  benchmarkOutputIdleTimeout,
+	checkInterval:      time.Second,
+}
+
+// benchmarkStreamWatchdog allows a long benchmark response to finish while it
+// is still producing text. It only cancels a request that never starts, stops
+// producing text.
+type benchmarkStreamWatchdog struct {
+	startedAt     time.Time
+	cancel        context.CancelFunc
+	policy        benchmarkStreamTimeoutPolicy
+	firstOutputAt int64
+	lastOutputAt  int64
+	done          chan struct{}
+	stopOnce      sync.Once
+
+	mu         sync.RWMutex
+	timeoutErr error
+	stopped    bool
+}
+
+func newBenchmarkStreamWatchdog(startedAt time.Time, cancel context.CancelFunc, policy benchmarkStreamTimeoutPolicy) *benchmarkStreamWatchdog {
+	return &benchmarkStreamWatchdog{
+		startedAt: startedAt,
+		cancel:    cancel,
+		policy:    policy,
+		done:      make(chan struct{}),
+	}
+}
+
+func (w *benchmarkStreamWatchdog) recordOutput() {
+	now := time.Now().UnixNano()
+	w.mu.Lock()
+	if w.firstOutputAt == 0 {
+		w.firstOutputAt = now
+	}
+	w.lastOutputAt = now
+	w.mu.Unlock()
+}
+
+func (w *benchmarkStreamWatchdog) timeoutError() error {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.timeoutErr
+}
+
+func (w *benchmarkStreamWatchdog) stop() {
+	w.stopOnce.Do(func() {
+		w.mu.Lock()
+		w.stopped = true
+		w.mu.Unlock()
+		close(w.done)
+	})
+}
+
+func (w *benchmarkStreamWatchdog) watch(ctx context.Context) {
+	interval := w.policy.checkInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.done:
+			return
+		case now := <-ticker.C:
+			firstOutputAt, lastOutputAt := w.outputTimes()
+			if firstOutputAt == 0 {
+				if now.Sub(w.startedAt) >= w.policy.firstOutputTimeout {
+					w.expire(errors.New("벤치마크 응답이 10분 안에 시작되지 않았습니다"))
+					return
+				}
+				continue
+			}
+			if now.Sub(time.Unix(0, lastOutputAt)) >= w.policy.outputIdleTimeout {
+				w.expire(errors.New("벤치마크 출력이 60초 동안 멈췄습니다"))
+				return
+			}
+		}
+	}
+}
+
+func (w *benchmarkStreamWatchdog) outputTimes() (int64, int64) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.firstOutputAt, w.lastOutputAt
+}
+
+func (w *benchmarkStreamWatchdog) expire(err error) {
+	w.mu.Lock()
+	if w.stopped || w.timeoutErr != nil {
+		w.mu.Unlock()
+		return
+	}
+	w.timeoutErr = err
+	w.mu.Unlock()
+	w.cancel()
+}
 
 type ConnectionProfile struct {
 	BaseURL string `json:"baseURL"`
@@ -36,6 +153,7 @@ type ChatRequest struct {
 	Profile   ConnectionProfile `json:"profile"`
 	Model     string            `json:"model"`
 	Messages  []ChatMessage     `json:"messages"`
+	Benchmark bool              `json:"benchmark"`
 }
 
 type ChatEvent struct {
@@ -227,7 +345,14 @@ func (a *App) StartChat(request ChatRequest) error {
 		return errors.New("전송할 메시지가 없습니다")
 	}
 
-	client, err := openai.NewClient(request.Profile.BaseURL, request.Profile.APIKey, nil)
+	var httpClient *http.Client
+	if request.Benchmark {
+		// A benchmark has its own activity-based watchdog. Do not let the
+		// standard five-minute HTTP timeout stop a response that is still
+		// streaming useful output.
+		httpClient = &http.Client{}
+	}
+	client, err := openai.NewClient(request.Profile.BaseURL, request.Profile.APIKey, httpClient)
 	if err != nil {
 		return err
 	}
@@ -249,7 +374,7 @@ func (a *App) StartChat(request ChatRequest) error {
 		return err
 	}
 
-	go a.runChat(ctx, request.RequestID, client, request.Model, messages)
+	go a.runChat(ctx, request.RequestID, client, request.Model, messages, request.Benchmark)
 	return nil
 }
 
@@ -269,10 +394,17 @@ func (a *App) runChat(
 	client *openai.Client,
 	model string,
 	messages []openai.Message,
+	benchmark bool,
 ) {
 	defer a.removeCancel(requestID)
 	startedAt := time.Now()
 	var firstTokenAt time.Time
+	var watchdog *benchmarkStreamWatchdog
+	if benchmark {
+		watchdog = newBenchmarkStreamWatchdog(startedAt, func() { a.CancelChat(requestID) }, defaultBenchmarkStreamTimeoutPolicy)
+		go watchdog.watch(ctx)
+		defer watchdog.stop()
+	}
 	a.emit(ChatEvent{RequestID: requestID, Type: "started"})
 
 	err := client.StreamChat(ctx, openai.ChatRequest{Model: model, Messages: messages}, func(chunk openai.StreamChunk) {
@@ -282,6 +414,9 @@ func (a *App) runChat(
 		if chunk.Delta != "" {
 			if firstTokenAt.IsZero() {
 				firstTokenAt = time.Now()
+			}
+			if watchdog != nil {
+				watchdog.recordOutput()
 			}
 			a.emit(ChatEvent{RequestID: requestID, Type: "delta", Delta: chunk.Delta})
 		}
@@ -294,6 +429,13 @@ func (a *App) runChat(
 		}
 	})
 	metrics := responseMetrics(startedAt, firstTokenAt)
+	if watchdog != nil {
+		watchdog.stop()
+		if timeoutErr := watchdog.timeoutError(); timeoutErr != nil {
+			a.emit(ChatEvent{RequestID: requestID, Type: "failed", Metrics: metrics, Error: timeoutErr.Error()})
+			return
+		}
+	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		a.emit(ChatEvent{RequestID: requestID, Type: "cancelled", Metrics: metrics})
 		return

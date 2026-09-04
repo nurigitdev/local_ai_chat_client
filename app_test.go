@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -339,6 +340,60 @@ func TestChatCancellationEmitsCancelledAfterStreamingStarts(t *testing.T) {
 		case <-timeout.C:
 			t.Fatal("timed out waiting for cancelled event")
 		}
+	}
+}
+
+func TestBenchmarkStreamWatchdogFailsWhenOutputNeverStarts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	watchdog := newBenchmarkStreamWatchdog(time.Now(), cancel, benchmarkStreamTimeoutPolicy{
+		firstOutputTimeout: 30 * time.Millisecond,
+		outputIdleTimeout:  40 * time.Millisecond,
+		checkInterval:      5 * time.Millisecond,
+	})
+	defer watchdog.stop()
+	go watchdog.watch(ctx)
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("benchmark watchdog did not time out before the first output")
+	}
+	if err := watchdog.timeoutError(); err == nil || !strings.Contains(err.Error(), "시작되지") {
+		t.Fatalf("watchdog timeout error = %v, want first-output timeout", err)
+	}
+}
+
+func TestBenchmarkStreamWatchdogExtendsWhileOutputContinues(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	watchdog := newBenchmarkStreamWatchdog(time.Now(), cancel, benchmarkStreamTimeoutPolicy{
+		firstOutputTimeout: 80 * time.Millisecond,
+		outputIdleTimeout:  80 * time.Millisecond,
+		checkInterval:      5 * time.Millisecond,
+	})
+	defer watchdog.stop()
+	go watchdog.watch(ctx)
+
+	for range 4 {
+		watchdog.recordOutput()
+		time.Sleep(35 * time.Millisecond)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatalf("benchmark watchdog cancelled an active stream: %v", watchdog.timeoutError())
+	default:
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(400 * time.Millisecond):
+		t.Fatal("benchmark watchdog did not time out after output stopped")
+	}
+	if err := watchdog.timeoutError(); err == nil || !strings.Contains(err.Error(), "출력이") {
+		t.Fatalf("watchdog timeout error = %v, want output-idle timeout", err)
 	}
 }
 
