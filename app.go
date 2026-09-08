@@ -20,27 +20,40 @@ const chatEventName = "chat:event"
 const (
 	benchmarkFirstOutputTimeout = 10 * time.Minute
 	benchmarkOutputIdleTimeout  = 60 * time.Second
+	chatFirstOutputTimeout      = 15 * time.Minute
+	chatOutputIdleTimeout       = 5 * time.Minute
 )
 
-type benchmarkStreamTimeoutPolicy struct {
+type streamTimeoutPolicy struct {
 	firstOutputTimeout time.Duration
 	outputIdleTimeout  time.Duration
 	checkInterval      time.Duration
+	firstOutputFailure string
+	outputIdleFailure  string
 }
 
-var defaultBenchmarkStreamTimeoutPolicy = benchmarkStreamTimeoutPolicy{
+var defaultBenchmarkStreamTimeoutPolicy = streamTimeoutPolicy{
 	firstOutputTimeout: benchmarkFirstOutputTimeout,
 	outputIdleTimeout:  benchmarkOutputIdleTimeout,
 	checkInterval:      time.Second,
+	firstOutputFailure: "벤치마크 응답이 10분 안에 시작되지 않았습니다",
+	outputIdleFailure:  "벤치마크 출력이 60초 동안 멈췄습니다",
 }
 
-// benchmarkStreamWatchdog allows a long benchmark response to finish while it
-// is still producing text. It only cancels a request that never starts, stops
-// producing text.
-type benchmarkStreamWatchdog struct {
+var defaultChatStreamTimeoutPolicy = streamTimeoutPolicy{
+	firstOutputTimeout: chatFirstOutputTimeout,
+	outputIdleTimeout:  chatOutputIdleTimeout,
+	checkInterval:      time.Second,
+	firstOutputFailure: "채팅 응답이 15분 안에 시작되지 않았습니다",
+	outputIdleFailure:  "채팅 출력이 5분 동안 멈췄습니다",
+}
+
+// streamWatchdog allows an active stream to run without an absolute deadline.
+// It only cancels requests that never begin or stop producing text.
+type streamWatchdog struct {
 	startedAt     time.Time
 	cancel        context.CancelFunc
-	policy        benchmarkStreamTimeoutPolicy
+	policy        streamTimeoutPolicy
 	firstOutputAt int64
 	lastOutputAt  int64
 	done          chan struct{}
@@ -51,8 +64,8 @@ type benchmarkStreamWatchdog struct {
 	stopped    bool
 }
 
-func newBenchmarkStreamWatchdog(startedAt time.Time, cancel context.CancelFunc, policy benchmarkStreamTimeoutPolicy) *benchmarkStreamWatchdog {
-	return &benchmarkStreamWatchdog{
+func newStreamWatchdog(startedAt time.Time, cancel context.CancelFunc, policy streamTimeoutPolicy) *streamWatchdog {
+	return &streamWatchdog{
 		startedAt: startedAt,
 		cancel:    cancel,
 		policy:    policy,
@@ -60,7 +73,7 @@ func newBenchmarkStreamWatchdog(startedAt time.Time, cancel context.CancelFunc, 
 	}
 }
 
-func (w *benchmarkStreamWatchdog) recordOutput() {
+func (w *streamWatchdog) recordOutput() {
 	now := time.Now().UnixNano()
 	w.mu.Lock()
 	if w.firstOutputAt == 0 {
@@ -70,13 +83,13 @@ func (w *benchmarkStreamWatchdog) recordOutput() {
 	w.mu.Unlock()
 }
 
-func (w *benchmarkStreamWatchdog) timeoutError() error {
+func (w *streamWatchdog) timeoutError() error {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.timeoutErr
 }
 
-func (w *benchmarkStreamWatchdog) stop() {
+func (w *streamWatchdog) stop() {
 	w.stopOnce.Do(func() {
 		w.mu.Lock()
 		w.stopped = true
@@ -85,7 +98,7 @@ func (w *benchmarkStreamWatchdog) stop() {
 	})
 }
 
-func (w *benchmarkStreamWatchdog) watch(ctx context.Context) {
+func (w *streamWatchdog) watch(ctx context.Context) {
 	interval := w.policy.checkInterval
 	if interval <= 0 {
 		interval = time.Second
@@ -103,26 +116,40 @@ func (w *benchmarkStreamWatchdog) watch(ctx context.Context) {
 			firstOutputAt, lastOutputAt := w.outputTimes()
 			if firstOutputAt == 0 {
 				if now.Sub(w.startedAt) >= w.policy.firstOutputTimeout {
-					w.expire(errors.New("벤치마크 응답이 10분 안에 시작되지 않았습니다"))
+					w.expire(w.firstOutputTimeoutError())
 					return
 				}
 				continue
 			}
 			if now.Sub(time.Unix(0, lastOutputAt)) >= w.policy.outputIdleTimeout {
-				w.expire(errors.New("벤치마크 출력이 60초 동안 멈췄습니다"))
+				w.expire(w.outputIdleTimeoutError())
 				return
 			}
 		}
 	}
 }
 
-func (w *benchmarkStreamWatchdog) outputTimes() (int64, int64) {
+func (w *streamWatchdog) firstOutputTimeoutError() error {
+	if w.policy.firstOutputFailure != "" {
+		return errors.New(w.policy.firstOutputFailure)
+	}
+	return errors.New("응답이 정해진 시간 안에 시작되지 않았습니다")
+}
+
+func (w *streamWatchdog) outputIdleTimeoutError() error {
+	if w.policy.outputIdleFailure != "" {
+		return errors.New(w.policy.outputIdleFailure)
+	}
+	return errors.New("응답 출력이 정해진 시간 동안 멈췄습니다")
+}
+
+func (w *streamWatchdog) outputTimes() (int64, int64) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.firstOutputAt, w.lastOutputAt
 }
 
-func (w *benchmarkStreamWatchdog) expire(err error) {
+func (w *streamWatchdog) expire(err error) {
 	w.mu.Lock()
 	if w.stopped || w.timeoutErr != nil {
 		w.mu.Unlock()
@@ -345,14 +372,10 @@ func (a *App) StartChat(request ChatRequest) error {
 		return errors.New("전송할 메시지가 없습니다")
 	}
 
-	var httpClient *http.Client
-	if request.Benchmark {
-		// A benchmark has its own activity-based watchdog. Do not let the
-		// standard five-minute HTTP timeout stop a response that is still
-		// streaming useful output.
-		httpClient = &http.Client{}
-	}
-	client, err := openai.NewClient(request.Profile.BaseURL, request.Profile.APIKey, httpClient)
+	// A streaming response has its own activity-based watchdog. Do not let the
+	// standard five-minute HTTP timeout stop a response that is still producing
+	// useful text.
+	client, err := openai.NewClient(request.Profile.BaseURL, request.Profile.APIKey, streamingHTTPClient())
 	if err != nil {
 		return err
 	}
@@ -399,12 +422,13 @@ func (a *App) runChat(
 	defer a.removeCancel(requestID)
 	startedAt := time.Now()
 	var firstTokenAt time.Time
-	var watchdog *benchmarkStreamWatchdog
+	policy := defaultChatStreamTimeoutPolicy
 	if benchmark {
-		watchdog = newBenchmarkStreamWatchdog(startedAt, func() { a.CancelChat(requestID) }, defaultBenchmarkStreamTimeoutPolicy)
-		go watchdog.watch(ctx)
-		defer watchdog.stop()
+		policy = defaultBenchmarkStreamTimeoutPolicy
 	}
+	watchdog := newStreamWatchdog(startedAt, func() { a.CancelChat(requestID) }, policy)
+	go watchdog.watch(ctx)
+	defer watchdog.stop()
 	a.emit(ChatEvent{RequestID: requestID, Type: "started"})
 
 	err := client.StreamChat(ctx, openai.ChatRequest{Model: model, Messages: messages}, func(chunk openai.StreamChunk) {
@@ -415,9 +439,7 @@ func (a *App) runChat(
 			if firstTokenAt.IsZero() {
 				firstTokenAt = time.Now()
 			}
-			if watchdog != nil {
-				watchdog.recordOutput()
-			}
+			watchdog.recordOutput()
 			a.emit(ChatEvent{RequestID: requestID, Type: "delta", Delta: chunk.Delta})
 		}
 		if chunk.Usage != nil {
@@ -429,12 +451,10 @@ func (a *App) runChat(
 		}
 	})
 	metrics := responseMetrics(startedAt, firstTokenAt)
-	if watchdog != nil {
-		watchdog.stop()
-		if timeoutErr := watchdog.timeoutError(); timeoutErr != nil {
-			a.emit(ChatEvent{RequestID: requestID, Type: "failed", Metrics: metrics, Error: timeoutErr.Error()})
-			return
-		}
+	watchdog.stop()
+	if timeoutErr := watchdog.timeoutError(); timeoutErr != nil {
+		a.emit(ChatEvent{RequestID: requestID, Type: "failed", Metrics: metrics, Error: timeoutErr.Error()})
+		return
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		a.emit(ChatEvent{RequestID: requestID, Type: "cancelled", Metrics: metrics})
@@ -449,6 +469,10 @@ func (a *App) runChat(
 		return
 	}
 	a.emit(ChatEvent{RequestID: requestID, Type: "failed", Metrics: metrics, Error: friendlyError(err).Error()})
+}
+
+func streamingHTTPClient() *http.Client {
+	return &http.Client{}
 }
 
 func responseMetrics(startedAt, firstTokenAt time.Time) *ResponseMetrics {

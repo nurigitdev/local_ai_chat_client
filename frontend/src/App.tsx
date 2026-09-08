@@ -19,6 +19,12 @@ import type {
 } from '../bindings/github.com/taengson/agent-chat-desktop/models';
 import ModelBenchmarkWorkspace, {type ModelBenchmarkSidebarState} from './ModelBenchmark';
 import OpenRouterModelPicker, {isOpenRouterURL} from './OpenRouterModelPicker';
+import {
+    createAttachmentChunks,
+    selectAttachmentContent,
+    textByteSize,
+    type AttachmentChunk,
+} from './attachmentContent';
 import './App.css';
 
 type Role = 'user' | 'assistant';
@@ -34,6 +40,13 @@ interface UIMessage {
     attachments: ChatAttachment[];
     usage?: TokenUsage;
     metrics?: ResponseMetrics;
+}
+
+interface AttachmentDraft {
+    name: string;
+    size: number;
+    source: string;
+    chunks: AttachmentChunk[];
 }
 
 interface ChatShareTarget {
@@ -63,12 +76,13 @@ const openRouterProfile: ConnectionProfileOption = {
     baseURL: 'https://openrouter.ai/api/v1',
     isBuiltIn: true,
 };
+const structuredAttachmentFileExtensions = new Set(['docx', 'xlsx']);
 const attachmentFileExtensions = new Set([
     'txt', 'md', 'csv', 'json', 'jsonl', 'xml', 'yaml', 'yml', 'toml', 'ini', 'log',
     'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'go', 'py', 'java', 'kt', 'kts', 'rb',
     'php', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'cs', 'rs', 'swift', 'sh', 'zsh',
     'sql', 'html', 'css', 'scss', 'less', 'vue', 'svelte', 'graphql', 'gql',
-    'pdf',
+    'pdf', ...structuredAttachmentFileExtensions,
 ]);
 const attachmentAccept = Array.from(attachmentFileExtensions, (extension) => `.${extension}`).join(',');
 const maxAttachmentsPerMessage = 4;
@@ -76,7 +90,6 @@ const maxAttachmentFileSize = 5 * 1024 * 1024;
 const maxAttachmentTotalFileSize = 12 * 1024 * 1024;
 const maxAttachmentContentSize = 240 * 1024;
 const maxAttachmentTotalContentSize = 512 * 1024;
-const attachmentExcerptMarker = '\n\n[문서가 길어 앞부분과 뒷부분만 모델에 전달했습니다.]\n\n';
 const emptyBenchmarkSidebar: ModelBenchmarkSidebarState = {
     model: '',
     profileName: '',
@@ -138,6 +151,12 @@ function attachmentExtension(fileName: string): string {
     return extension && extension !== fileName ? extension.toLocaleLowerCase('en-US') : '';
 }
 
+type StructuredAttachmentFileType = 'docx' | 'xlsx';
+
+function isStructuredAttachmentFileType(extension: string): extension is StructuredAttachmentFileType {
+    return structuredAttachmentFileExtensions.has(extension);
+}
+
 function formatFileSize(bytes: number): string {
     if (bytes < 1_024) return `${bytes}B`;
     if (bytes < 1_024 * 1_024) {
@@ -154,7 +173,12 @@ function escapeHTML(value: string): string {
 
 function shareAttachmentLines(message: UIMessage | null): string[] {
     if (!message?.attachments.length) return [];
-    return message.attachments.map((attachment) => `- ${attachment.name} (${formatFileSize(attachment.size)})${attachment.truncated ? ' · 일부 발췌본이 모델에 전달됨' : ''}`);
+    return message.attachments.map((attachment) => `- ${attachment.name} (${formatFileSize(attachment.size)})${attachmentDeliveryDescription(attachment)}`);
+}
+
+function attachmentDeliveryDescription(attachment: ChatAttachment): string {
+    if (attachment.selectionSummary) return ` · ${attachment.selectionSummary}`;
+    return attachment.truncated ? ' · 일부 발췌본이 모델에 전달됨' : '';
 }
 
 function formatShareTimestamp(): string {
@@ -223,51 +247,6 @@ function chatShareHTML(target: ChatShareTarget, mode: ChatShareContentMode): str
 </html>`;
 }
 
-function textByteSize(content: string): number {
-    return new TextEncoder().encode(content).byteLength;
-}
-
-function decodeLeadingUTF8(bytes: Uint8Array, length: number): string {
-    const decoder = new TextDecoder('utf-8', {fatal: true});
-    for (let trim = 0; trim < 4; trim += 1) {
-        try {
-            return decoder.decode(bytes.slice(0, length - trim));
-        } catch {
-            // Avoid splitting a multi-byte character at the excerpt boundary.
-        }
-    }
-    return new TextDecoder().decode(bytes.slice(0, length));
-}
-
-function decodeTrailingUTF8(bytes: Uint8Array, length: number): string {
-    const decoder = new TextDecoder('utf-8', {fatal: true});
-    for (let trim = 0; trim < 4; trim += 1) {
-        try {
-            return decoder.decode(bytes.slice(bytes.length - length + trim));
-        } catch {
-            // Avoid splitting a multi-byte character at the excerpt boundary.
-        }
-    }
-    return new TextDecoder().decode(bytes.slice(bytes.length - length));
-}
-
-function excerptAttachmentContent(content: string): Pick<ChatAttachment, 'content' | 'truncated'> {
-    const normalized = content.replace(/\r\n?/g, '\n');
-    const bytes = new TextEncoder().encode(normalized);
-    if (bytes.byteLength <= maxAttachmentContentSize) {
-        return {content: normalized, truncated: false};
-    }
-
-    const markerSize = textByteSize(attachmentExcerptMarker);
-    const availableSize = maxAttachmentContentSize - markerSize;
-    const leadingSize = Math.floor(availableSize * 0.7);
-    const trailingSize = availableSize - leadingSize;
-    return {
-        content: `${decodeLeadingUTF8(bytes, leadingSize)}${attachmentExcerptMarker}${decodeTrailingUTF8(bytes, trailingSize)}`,
-        truncated: true,
-    };
-}
-
 function pdfPageText(items: TextContent['items']): string {
     return items.map((item) => {
         if (!item || typeof item !== 'object' || !('str' in item) || typeof item.str !== 'string') {
@@ -330,23 +309,102 @@ async function readPDFContent(file: File): Promise<string> {
     }
 }
 
-async function readAttachmentContent(file: File, name: string): Promise<string> {
-    if (attachmentExtension(name) === 'pdf') {
-        return readPDFContent(file);
+function documentTextFromHTML(html: string): string {
+    const document = new DOMParser().parseFromString(html, 'text/html');
+    const lines: string[] = [];
+    for (const element of document.body.querySelectorAll('h1, h2, h3, h4, h5, h6, p, li, tr')) {
+        if (element.tagName === 'P' && element.closest('tr')) continue;
+        const text = element.tagName === 'TR'
+            ? Array.from(element.querySelectorAll('th, td'))
+                .map((cell) => cell.textContent?.replace(/\s+/g, ' ').trim() || '')
+                .filter(Boolean)
+                .join('\t')
+            : element.textContent?.replace(/\s+/g, ' ').trim() || '';
+        if (!text) continue;
+        if (/^H[1-6]$/.test(element.tagName)) {
+            lines.push(`# ${text}`);
+        } else {
+            lines.push(text);
+        }
     }
+    return lines.join('\n\n').trim();
+}
 
+async function readDOCXAttachmentContent(file: File): Promise<Pick<AttachmentDraft, 'source' | 'chunks'>> {
+    const mammoth = await import('mammoth');
+    const result = await mammoth.convertToHtml(
+        {arrayBuffer: await file.arrayBuffer()},
+        {
+            externalFileAccess: false,
+            includeEmbeddedStyleMap: false,
+            convertImage: mammoth.images.imgElement(async () => ({src: ''})),
+        },
+    );
+    const source = documentTextFromHTML(result.value);
+    if (!source) {
+        throw new Error(`“${attachmentFileName(file.name)}”에서 읽을 수 있는 텍스트를 찾지 못했습니다.`);
+    }
+    return {source, chunks: createAttachmentChunks(source)};
+}
+
+function spreadsheetCellText(value: unknown): string {
+    if (value === null || value === undefined) return '';
+    if (value instanceof Date) return value.toISOString().slice(0, 10);
+    return String(value).replace(/[\t\r\n]+/g, ' ').trim();
+}
+
+async function readXLSXAttachmentContent(file: File): Promise<Pick<AttachmentDraft, 'source' | 'chunks'>> {
+    const {default: readXLSXFile} = await import('read-excel-file/browser');
+    const sheets = await readXLSXFile(file);
+    const lines: string[] = [];
+    let cellCount = 0;
+    const maxSpreadsheetCells = 250_000;
+    for (const sheet of sheets) {
+        lines.push(`# ${sheet.sheet} 시트`);
+        for (const row of sheet.data) {
+            cellCount += row.length;
+            if (cellCount > maxSpreadsheetCells) {
+                lines.push(`[셀 ${maxSpreadsheetCells.toLocaleString('ko-KR')}개 이후 내용은 읽지 않았습니다.]`);
+                break;
+            }
+            const values = row.map(spreadsheetCellText);
+            if (values.some(Boolean)) lines.push(values.join('\t'));
+        }
+        if (cellCount > maxSpreadsheetCells) break;
+        lines.push('');
+    }
+    const source = lines.join('\n').trim();
+    if (!source || sheets.every((sheet) => sheet.data.every((row) => row.every((value) => spreadsheetCellText(value) === '')))) {
+        throw new Error(`“${attachmentFileName(file.name)}”에서 읽을 수 있는 텍스트를 찾지 못했습니다.`);
+    }
+    return {source, chunks: createAttachmentChunks(source)};
+}
+
+async function readAttachmentContent(file: File, name: string): Promise<Pick<AttachmentDraft, 'source' | 'chunks'>> {
+    const extension = attachmentExtension(name);
+    if (extension === 'pdf') {
+        const source = await readPDFContent(file);
+        return {source, chunks: createAttachmentChunks(source)};
+    }
+    if (isStructuredAttachmentFileType(extension)) {
+        return extension === 'docx'
+            ? readDOCXAttachmentContent(file)
+            : readXLSXAttachmentContent(file);
+    }
     const content = await file.text();
     if (content.includes('\0')) {
         throw new Error(`“${name}”은 텍스트 파일로 읽을 수 없습니다.`);
     }
-    return content;
+    return {source: content, chunks: createAttachmentChunks(content)};
 }
 
 function messageContentForModel(message: UIMessage): string {
     const attachmentContent = message.attachments.map((attachment) => (
         `[첨부 파일: ${attachment.name}]\n${attachment.content}\n[첨부 파일 끝]`
     ));
-    return [message.content.trim(), ...attachmentContent].filter(Boolean).join('\n\n');
+    const request = message.content.trim();
+    if (attachmentContent.length === 0) return request;
+    return [...attachmentContent, request && `[사용자 요청]\n${request}`].filter(Boolean).join('\n\n');
 }
 
 function summaryFromConversation(conversation: Conversation): ConversationSummary {
@@ -540,7 +598,7 @@ function App() {
     const [conversationTitleDraft, setConversationTitleDraft] = useState('');
     const [messages, setMessages] = useState<UIMessage[]>([]);
     const [input, setInput] = useState('');
-    const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+    const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
     const [busy, setBusy] = useState(false);
     const [cancelling, setCancelling] = useState(false);
     const [copiedMessageID, setCopiedMessageID] = useState<string | null>(null);
@@ -1234,7 +1292,16 @@ function App() {
             return;
         }
 
-        const userMessage: UIMessage = {id: makeID(), role: 'user', content: text, status: 'complete', attachments};
+        const attachmentBudget = Math.min(
+            maxAttachmentContentSize,
+            Math.floor(maxAttachmentTotalContentSize / Math.max(attachments.length, 1)),
+        );
+        const selectedAttachments: ChatAttachment[] = attachments.map((attachment) => ({
+            name: attachment.name,
+            size: attachment.size,
+            ...selectAttachmentContent(attachment.source, attachment.chunks, text, attachmentBudget),
+        }));
+        const userMessage: UIMessage = {id: makeID(), role: 'user', content: text, status: 'complete', attachments: selectedAttachments};
         const assistantMessage: UIMessage = {id: makeID(), role: 'assistant', content: '', status: 'streaming', attachments: []};
         const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
         setInput('');
@@ -1255,7 +1322,7 @@ function App() {
         }
 
         try {
-            const nextAttachments = await Promise.all(files.map(async (file): Promise<ChatAttachment> => {
+            const nextAttachments = await Promise.all(files.map(async (file): Promise<AttachmentDraft> => {
                 const name = attachmentFileName(file.name);
                 if (!attachmentFileExtensions.has(attachmentExtension(name))) {
                     throw new Error(`“${name}”은 아직 지원하지 않는 파일 형식입니다.`);
@@ -1265,8 +1332,7 @@ function App() {
                 }
 
                 const extracted = await readAttachmentContent(file, name);
-                const excerpt = excerptAttachmentContent(extracted);
-                return {name, size: file.size, ...excerpt};
+                return {name, size: file.size, ...extracted};
             }));
             const currentFileSize = attachments.reduce((total, attachment) => total + attachment.size, 0);
             const nextFileSize = nextAttachments.reduce((total, attachment) => total + attachment.size, currentFileSize);
@@ -1274,13 +1340,6 @@ function App() {
                 setError(`첨부 원본 파일의 전체 크기는 ${formatFileSize(maxAttachmentTotalFileSize)}까지 첨부할 수 있습니다.`);
                 return;
             }
-            const currentContentSize = attachments.reduce((total, attachment) => total + textByteSize(attachment.content), 0);
-            const nextContentSize = nextAttachments.reduce((total, attachment) => total + textByteSize(attachment.content), currentContentSize);
-            if (nextContentSize > maxAttachmentTotalContentSize) {
-                setError(`모델에 전달할 문서 텍스트는 한 메시지에 ${formatFileSize(maxAttachmentTotalContentSize)}까지 가능합니다.`);
-                return;
-            }
-
             setAttachments((current) => [...current, ...nextAttachments]);
             setError('');
         } catch (reason) {
@@ -1767,7 +1826,7 @@ function App() {
                                             <div className="message-attachments" aria-label="첨부 파일">
                                                 {message.attachments.map((attachment, attachmentIndex) => (
                                                     <span key={`${attachment.name}-${attachmentIndex}`}>
-                                                        {attachment.name} · {formatFileSize(attachment.size)}{attachment.truncated ? ' · 일부 발췌' : ''}
+                                                        {attachment.name} · {formatFileSize(attachment.size)}{attachmentDeliveryDescription(attachment)}
                                                     </span>
                                                 ))}
                                             </div>
@@ -1842,8 +1901,8 @@ function App() {
                             type="button"
                             onClick={() => attachmentInputRef.current?.click()}
                             disabled={!activeConversation || !selectedModel || busy || attachments.length >= maxAttachmentsPerMessage}
-                            aria-label="텍스트, 코드 또는 PDF 파일 첨부"
-                            title="텍스트, 코드 또는 PDF 파일 첨부"
+                            aria-label="텍스트, 코드, PDF, Word 또는 Excel 문서 첨부"
+                            title="텍스트, 코드, PDF, Word 또는 Excel 문서 첨부"
                         >
                             파일
                         </button>
@@ -1853,7 +1912,7 @@ function App() {
                                     {attachments.map((attachment, index) => (
                                         <span key={`${attachment.name}-${index}`}>
                                             <strong>{attachment.name}</strong>
-                                            <small>{formatFileSize(attachment.size)}{attachment.truncated ? ' · 일부 발췌' : ''}</small>
+                                            <small>{formatFileSize(attachment.size)}{textByteSize(attachment.source) > maxAttachmentContentSize ? ' · 전송 시 관련 부분 선택' : ''}</small>
                                             <button
                                                 type="button"
                                                 onClick={() => removeAttachment(index)}

@@ -37,14 +37,15 @@ type ConversationMessage struct {
 	Metrics     *ResponseMetrics `json:"metrics,omitempty"`
 }
 
-// ChatAttachment stores the locally extracted text for an attached text,
-// source-code file, or text-based PDF. The original file is never copied from
-// its location.
+// ChatAttachment stores the locally extracted and selected text for an
+// attached text, source-code file, text-based PDF, DOCX, or XLSX file. The
+// original file is never copied from its location.
 type ChatAttachment struct {
-	Name      string `json:"name"`
-	Size      int64  `json:"size"`
-	Content   string `json:"content"`
-	Truncated bool   `json:"truncated,omitempty"`
+	Name             string `json:"name"`
+	Size             int64  `json:"size"`
+	Content          string `json:"content"`
+	Truncated        bool   `json:"truncated,omitempty"`
+	SelectionSummary string `json:"selectionSummary,omitempty"`
 }
 
 type Conversation struct {
@@ -400,6 +401,9 @@ func validateAttachments(attachments []ChatAttachment) error {
 		}
 		if strings.IndexByte(attachment.Content, 0) >= 0 {
 			return errors.New("텍스트 파일만 첨부할 수 있습니다")
+		}
+		if len([]rune(attachment.SelectionSummary)) > 160 || strings.IndexByte(attachment.SelectionSummary, 0) >= 0 {
+			return errors.New("첨부 파일 발췌 정보가 올바르지 않습니다")
 		}
 		totalFileSize += attachment.Size
 		totalContentSize += len([]byte(attachment.Content))

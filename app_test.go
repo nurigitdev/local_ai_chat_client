@@ -192,6 +192,18 @@ func TestValidateAttachmentsRejectsOversizedSourceFile(t *testing.T) {
 	}
 }
 
+func TestValidateAttachmentsRejectsOversizedSelectionSummary(t *testing.T) {
+	attachment := ChatAttachment{
+		Name:             "excerpt.txt",
+		Size:             1,
+		Content:          "excerpt",
+		SelectionSummary: strings.Repeat("가", 161),
+	}
+	if err := validateAttachments([]ChatAttachment{attachment}); err == nil {
+		t.Fatal("validateAttachments() error = nil, want oversized selection summary rejection")
+	}
+}
+
 func TestConnectionProfileStoreSavesOnlyServerURL(t *testing.T) {
 	root := t.TempDir()
 	store := newConnectionProfileStore(root)
@@ -343,11 +355,11 @@ func TestChatCancellationEmitsCancelledAfterStreamingStarts(t *testing.T) {
 	}
 }
 
-func TestBenchmarkStreamWatchdogFailsWhenOutputNeverStarts(t *testing.T) {
+func TestStreamWatchdogFailsWhenOutputNeverStarts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	watchdog := newBenchmarkStreamWatchdog(time.Now(), cancel, benchmarkStreamTimeoutPolicy{
+	watchdog := newStreamWatchdog(time.Now(), cancel, streamTimeoutPolicy{
 		firstOutputTimeout: 30 * time.Millisecond,
 		outputIdleTimeout:  40 * time.Millisecond,
 		checkInterval:      5 * time.Millisecond,
@@ -358,18 +370,18 @@ func TestBenchmarkStreamWatchdogFailsWhenOutputNeverStarts(t *testing.T) {
 	select {
 	case <-ctx.Done():
 	case <-time.After(300 * time.Millisecond):
-		t.Fatal("benchmark watchdog did not time out before the first output")
+		t.Fatal("stream watchdog did not time out before the first output")
 	}
 	if err := watchdog.timeoutError(); err == nil || !strings.Contains(err.Error(), "시작되지") {
 		t.Fatalf("watchdog timeout error = %v, want first-output timeout", err)
 	}
 }
 
-func TestBenchmarkStreamWatchdogExtendsWhileOutputContinues(t *testing.T) {
+func TestStreamWatchdogExtendsWhileOutputContinues(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	watchdog := newBenchmarkStreamWatchdog(time.Now(), cancel, benchmarkStreamTimeoutPolicy{
+	watchdog := newStreamWatchdog(time.Now(), cancel, streamTimeoutPolicy{
 		firstOutputTimeout: 80 * time.Millisecond,
 		outputIdleTimeout:  80 * time.Millisecond,
 		checkInterval:      5 * time.Millisecond,
@@ -383,17 +395,32 @@ func TestBenchmarkStreamWatchdogExtendsWhileOutputContinues(t *testing.T) {
 	}
 	select {
 	case <-ctx.Done():
-		t.Fatalf("benchmark watchdog cancelled an active stream: %v", watchdog.timeoutError())
+		t.Fatalf("stream watchdog cancelled an active stream: %v", watchdog.timeoutError())
 	default:
 	}
 
 	select {
 	case <-ctx.Done():
 	case <-time.After(400 * time.Millisecond):
-		t.Fatal("benchmark watchdog did not time out after output stopped")
+		t.Fatal("stream watchdog did not time out after output stopped")
 	}
 	if err := watchdog.timeoutError(); err == nil || !strings.Contains(err.Error(), "출력이") {
 		t.Fatalf("watchdog timeout error = %v, want output-idle timeout", err)
+	}
+}
+
+func TestChatStreamTimeoutPolicyIsLooserThanBenchmark(t *testing.T) {
+	if defaultChatStreamTimeoutPolicy.firstOutputTimeout <= defaultBenchmarkStreamTimeoutPolicy.firstOutputTimeout {
+		t.Fatalf("chat first-output timeout = %s, want longer than benchmark timeout %s", defaultChatStreamTimeoutPolicy.firstOutputTimeout, defaultBenchmarkStreamTimeoutPolicy.firstOutputTimeout)
+	}
+	if defaultChatStreamTimeoutPolicy.outputIdleTimeout <= defaultBenchmarkStreamTimeoutPolicy.outputIdleTimeout {
+		t.Fatalf("chat output-idle timeout = %s, want longer than benchmark timeout %s", defaultChatStreamTimeoutPolicy.outputIdleTimeout, defaultBenchmarkStreamTimeoutPolicy.outputIdleTimeout)
+	}
+}
+
+func TestStreamingHTTPClientHasNoAbsoluteTimeout(t *testing.T) {
+	if timeout := streamingHTTPClient().Timeout; timeout != 0 {
+		t.Fatalf("streaming HTTP timeout = %s, want no absolute timeout", timeout)
 	}
 }
 

@@ -11,10 +11,12 @@
   },
   "dependencies": {
     "@wailsio/runtime": "^3.0.0-beta.11",
+    "mammoth": "^1.12.2",
     "pdfjs-dist": "^6.3.289",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
+    "read-excel-file": "^9.3.10",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
