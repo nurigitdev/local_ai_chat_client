@@ -149,6 +149,7 @@
 
 .benchmark-sidebar-history-list {
     display: grid;
+    align-content: start;
     min-height: 0;
     overflow-x: hidden;
     overflow-y: auto;

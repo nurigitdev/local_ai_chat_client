@@ -64,9 +64,17 @@ const developmentBenchmarkTemplates: BenchmarkCaseDraft[] = [
 예외 처리(공백, 대소문자 무시)를 포함하고 주석을 상세히 달아줘.`,
     },
     {
-        category: '구조화된 출력',
-        title: '빌드 오류 JSON 정리',
-        prompt: `아래 빌드 로그를 JSON 배열로 정리하세요. Markdown 코드 블록이나 설명은 쓰지 마세요. 각 객체는 file, severity, action 키만 가져야 합니다. severity는 error 또는 warning 중 하나이고, action은 한국어 20자 이하여야 합니다.\n\n- src/auth.ts:42 - error TS2322: Type 'string | undefined' is not assignable to type 'string'.\n- src/cache.ts:18 - warning: cache key has no expiration time.\n- tests/payment.test.ts:77 - error: expected status 201 but received 500.`,
+        category: '분산 시스템 설계',
+        title: '선착순 쿠폰 발급 동시성 제어',
+        prompt: `대규모 트래픽이 발생하는 선착순 쿠폰 발급 시스템을 설계하려고 합니다.
+
+Redis를 활용하여 동시성 이슈(Race Condition)를 해결하는 두 가지 접근 방식을 제시하고, Python 또는 의사 코드로 구현하세요.
+
+[조건]
+
+1. 두 방식의 구현 코드를 각각 작성할 것.
+2. 두 방식의 장단점, 성능(처리량), 정합성 관점의 비교 표를 작성할 것.
+3. 어떤 상황에서 어느 방식을 채택해야 하는지 결론 및 시나리오별 가이드를 제시할 것.`,
     },
 ];
 
@@ -74,7 +82,7 @@ const benchmarkSuites: BenchmarkSuite[] = [
     {
         id: 'development',
         name: '개발·지시 이행 · 4문항',
-        description: '알고리즘 정확성, 엄격한 제약 준수, 코드 검토, 구조화된 출력을 확인합니다.',
+        description: '알고리즘 정확성, 엄격한 제약 준수, 코드 작성, 분산 시스템 설계를 확인합니다.',
         templates: developmentBenchmarkTemplates,
     },
     {
