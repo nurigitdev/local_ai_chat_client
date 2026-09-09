@@ -38,6 +38,9 @@ type BenchmarkChartScale = 'relative' | 'absolute';
 type BenchmarkExportKind = 'analysis' | 'comparison';
 type BenchmarkExportFormat = 'html' | 'markdown';
 
+const benchmarkReportFormatVersion = 1;
+const benchmarkReportMarkerName = 'agent-chat-benchmark-report-v1';
+
 const developmentBenchmarkTemplates: BenchmarkCaseDraft[] = [
     {
         category: '알고리즘',
@@ -131,6 +134,7 @@ export interface ModelBenchmarkSidebarState {
     completedCaseCount: number;
     caseCount: number;
     recent: ModelBenchmarkSummary[];
+    imported: ModelBenchmarkSummary[];
     isHistoryLoading: boolean;
 }
 
@@ -291,6 +295,20 @@ function benchmarkExportFilename(kind: BenchmarkExportKind, format: BenchmarkExp
     return `agent-chat-benchmark-${kind}-${timestamp}.${benchmarkExportFormatInfo(format).extension}`;
 }
 
+function base64EncodeUTF8(value: string): string {
+    const bytes = new TextEncoder().encode(value);
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return btoa(binary);
+}
+
+function benchmarkReportImportMarker(records: ModelBenchmark[]): string {
+    const payload = base64EncodeUTF8(JSON.stringify({version: benchmarkReportFormatVersion, records}));
+    return `<!-- ${benchmarkReportMarkerName} ${payload} -->`;
+}
+
 function benchmarkMetadataMarkdown(benchmark: ModelBenchmark): string[] {
     const summary = benchmarkSummary(benchmark);
     return [
@@ -312,6 +330,8 @@ function benchmarkMarkdownReport(kind: BenchmarkExportKind, records: ModelBenchm
         `- 포함 기록: ${records.length}개`,
         '',
         '> 이 보고서에는 API 키와 인증 헤더가 포함되지 않습니다.',
+        '',
+        benchmarkReportImportMarker(records),
     ];
 
     records.forEach((benchmark, recordIndex) => {
@@ -394,6 +414,7 @@ function benchmarkHTMLReport(kind: BenchmarkExportKind, records: ModelBenchmark[
     </header>
     ${recordHTML}
   </main>
+  ${benchmarkReportImportMarker(records)}
 </body>
 </html>`;
 }
@@ -444,6 +465,7 @@ function benchmarkSummary(benchmark: ModelBenchmark): ModelBenchmarkSummary {
     }, 0);
     return {
         id: benchmark.id,
+        imported: benchmark.imported,
         suiteName: benchmark.suiteName,
         model: benchmark.model,
         profileName: benchmark.profileName,
@@ -717,7 +739,7 @@ function BenchmarkExportActions({
         <section className="benchmark-export-actions" aria-label={`${benchmarkExportKindLabel(kind)} 보고서 내보내기`}>
             <div>
                 <span>보고서 내보내기</span>
-                <small>질문·답변 전문과 측정값을 저장합니다. API 키는 포함되지 않습니다.</small>
+                <small>질문·답변 전문과 측정값을 저장하며, 다른 Agent Chat에서 다시 가져올 수 있습니다. API 키는 포함되지 않습니다.</small>
             </div>
             <div className="benchmark-export-buttons">
                 <button className="benchmark-export-button" type="button" onClick={() => onExport('html')} disabled={disabled}>
@@ -776,6 +798,8 @@ function ModelBenchmarkWorkspace({
     const [error, setError] = useState('');
     const [exportingFormat, setExportingFormat] = useState<BenchmarkExportFormat | null>(null);
     const [exportMessage, setExportMessage] = useState('');
+    const [isImporting, setIsImporting] = useState(false);
+    const [importMessage, setImportMessage] = useState('');
 
     const benchmarkRef = useRef<ModelBenchmark | null>(null);
     const requestRef = useRef<{requestID: string; caseID: string} | null>(null);
@@ -937,7 +961,8 @@ function ModelBenchmarkWorkspace({
             status: isRunning ? 'running' : 'idle',
             completedCaseCount: isRunning ? summary?.completedCaseCount || 0 : 0,
             caseCount: isRunning ? summary?.caseCount || 0 : 0,
-            recent: history.slice(0, 8),
+            recent: history.filter((item) => !item.imported).slice(0, 8),
+            imported: history.filter((item) => item.imported).slice(0, 8),
             isHistoryLoading: loadingHistory,
         });
     }, [benchmark, history, isRunning, loadingHistory, onSidebarChange]);
@@ -950,6 +975,7 @@ function ModelBenchmarkWorkspace({
         completedCaseCount: 0,
         caseCount: 0,
         recent: [],
+        imported: [],
         isHistoryLoading: false,
     }), [onSidebarChange]);
 
@@ -1166,6 +1192,7 @@ function ModelBenchmarkWorkspace({
         }
         const initial: ModelBenchmark = {
             id: '',
+            imported: false,
             profileID: selectedProfile.id,
             profileName: selectedProfile.name,
             profileBaseURL: selectedProfile.baseURL,
@@ -1268,6 +1295,31 @@ function ModelBenchmarkWorkspace({
         }
     }
 
+    async function importBenchmarkReport() {
+        if (isRunning || isImporting) return;
+        try {
+            setIsImporting(true);
+            setImportMessage('');
+            setError('');
+            const path = await Dialogs.OpenFile({
+                Title: '벤치마크 보고서 가져오기',
+                ButtonText: '보고서 가져오기',
+                Filters: [{DisplayName: '벤치마크 보고서', Pattern: '*.md;*.html'}],
+            });
+            if (!path) return;
+            const imported = await ChatService.ImportBenchmarkReport(path) || [];
+            if (!imported.length) return;
+            imported.forEach(upsertHistory);
+            setAnalysisID(imported[0].id);
+            setHomeTab('analysis');
+            setImportMessage(`${imported.length}개의 벤치마크 결과를 가져왔습니다.`);
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            setIsImporting(false);
+        }
+    }
+
     function renderCase(benchmarkCase: ModelBenchmarkCase) {
         const speed = formatGenerationSpeed(benchmarkCase.usage, benchmarkCase.metrics);
         return (
@@ -1357,9 +1409,8 @@ function ModelBenchmarkWorkspace({
             && (!comparisonC || hasSameTestConfiguration(comparisonA, comparisonC))
         : false;
     const sameServerProfile = comparisonA && comparisonB
-        ? comparisonA.profileID === comparisonB.profileID
-            && comparisonA.profileBaseURL === comparisonB.profileBaseURL
-            && (!comparisonC || (comparisonA.profileID === comparisonC.profileID && comparisonA.profileBaseURL === comparisonC.profileBaseURL))
+        ? comparisonA.profileBaseURL === comparisonB.profileBaseURL
+            && (!comparisonC || comparisonA.profileBaseURL === comparisonC.profileBaseURL)
         : false;
 
     return (
@@ -1369,8 +1420,14 @@ function ModelBenchmarkWorkspace({
                     <span className="eyebrow">MODEL BENCHMARK</span>
                     <h1>{homeTitle}</h1>
                 </div>
+                <div className="benchmark-header-actions">
+                    <button className="secondary-button" type="button" onClick={() => void importBenchmarkReport()} disabled={isRunning || isImporting}>
+                        {isImporting ? '가져오는 중…' : '보고서 가져오기'}
+                    </button>
+                </div>
             </header>
             {error && <div className="error-banner" role="alert">{error}</div>}
+            {importMessage && <p className="benchmark-import-status" role="status">{importMessage}</p>}
             {isRunning && benchmark && (
                 <section className="benchmark-home-running" aria-label="실행 중인 벤치마크">
                     <div>

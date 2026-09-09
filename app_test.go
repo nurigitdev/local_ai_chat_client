@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -444,6 +446,9 @@ func TestModelBenchmarkStoreCreatesSavesAndOpensBenchmark(t *testing.T) {
 	if benchmark.ID == "" || benchmark.CreatedAt == "" {
 		t.Fatalf("Create() = %#v", benchmark)
 	}
+	if benchmark.Imported {
+		t.Fatalf("Create() marked a local benchmark as imported: %#v", benchmark)
+	}
 
 	benchmark.Status = "completed"
 	benchmark.Cases[0] = ModelBenchmarkCase{
@@ -485,5 +490,109 @@ func TestModelBenchmarkStoreCreatesSavesAndOpensBenchmark(t *testing.T) {
 	}
 	if _, err := store.Open(saved.ID); err == nil {
 		t.Fatal("Open() succeeded after benchmark Delete()")
+	}
+}
+
+func TestModelBenchmarkStoreImportsSharedReportAndPreservesMetrics(t *testing.T) {
+	store := newModelBenchmarkStore(t.TempDir())
+	source := completedBenchmarkForReport("shared-result")
+	payload, err := json.Marshal(benchmarkReportPayload{
+		Version: benchmarkReportFormatVersion,
+		Records: []ModelBenchmark{source},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "shared-benchmark.html")
+	contents := "<html><body><!-- agent-chat-benchmark-report-v1 " + base64.StdEncoding.EncodeToString(payload) + " --></body></html>"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	imported, err := store.ImportReport(path)
+	if err != nil {
+		t.Fatalf("ImportReport() error = %v", err)
+	}
+	if len(imported) != 1 || imported[0].ID != source.ID || !imported[0].Imported {
+		t.Fatalf("ImportReport() = %#v, want source ID %q", imported, source.ID)
+	}
+	opened, err := store.Open(source.ID)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if got := opened.Cases[0]; got.Content != source.Cases[0].Content || got.Metrics == nil || *got.Metrics != *source.Cases[0].Metrics || got.Usage == nil || *got.Usage != *source.Cases[0].Usage {
+		t.Fatalf("opened imported case = %#v, want original metrics and response", got)
+	}
+
+	// Re-importing the same report must keep both results instead of replacing
+	// the first one, because an imported report may use an existing local ID.
+	importedAgain, err := store.ImportReport(path)
+	if err != nil {
+		t.Fatalf("second ImportReport() error = %v", err)
+	}
+	if len(importedAgain) != 1 || importedAgain[0].ID == source.ID {
+		t.Fatalf("second ImportReport() = %#v, want a distinct local ID", importedAgain)
+	}
+	summaries, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(summaries) != 2 || !summaries[0].Imported || !summaries[1].Imported {
+		t.Fatalf("List() = %#v, want two imported records", summaries)
+	}
+}
+
+func TestModelBenchmarkStoreImportsExistingLocalMarkdownRecord(t *testing.T) {
+	store := newModelBenchmarkStore(t.TempDir())
+	source := completedBenchmarkForReport("local-record")
+	contents, err := marshalModelBenchmark(source)
+	if err != nil {
+		t.Fatalf("marshalModelBenchmark() error = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "local-record.md")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	imported, err := store.ImportReport(path)
+	if err != nil {
+		t.Fatalf("ImportReport() error = %v", err)
+	}
+	if len(imported) != 1 || imported[0].ID != source.ID || !imported[0].Imported {
+		t.Fatalf("ImportReport() = %#v, want %#v", imported, source)
+	}
+}
+
+func TestReadBenchmarkReportRejectsReportsWithoutImportData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old-report.md")
+	if err := os.WriteFile(path, []byte("# Agent Chat 벤치마크 보고서\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if _, err := readBenchmarkReport(path); err == nil {
+		t.Fatal("readBenchmarkReport() accepted a report without import data")
+	}
+}
+
+func completedBenchmarkForReport(id string) ModelBenchmark {
+	return ModelBenchmark{
+		ID:             id,
+		ProfileID:      "profile-1",
+		ProfileName:    "공유 서버",
+		ProfileBaseURL: "https://models.example.com/v1",
+		Model:          "shared-model",
+		SuiteName:      "공유 벤치마크",
+		Status:         "completed",
+		CreatedAt:      "2026-09-09T01:02:03Z",
+		UpdatedAt:      "2026-09-09T01:02:04Z",
+		Cases: []ModelBenchmarkCase{{
+			ID:       "shared-case",
+			Category: "지시 이행",
+			Title:    "구조화된 출력",
+			Prompt:   "JSON 배열로 답변",
+			Content:  "[\"결과\"]",
+			Status:   "complete",
+			Usage:    &TokenUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
+			Metrics:  &ResponseMetrics{TotalDurationMs: 1_234, FirstTokenDurationMs: 321},
+		}},
 	}
 }

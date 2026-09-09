@@ -98,6 +98,7 @@ const emptyBenchmarkSidebar: ModelBenchmarkSidebarState = {
     completedCaseCount: 0,
     caseCount: 0,
     recent: [],
+    imported: [],
     isHistoryLoading: false,
 };
 
@@ -675,6 +676,7 @@ function App() {
             setBenchmarkSidebar((current) => ({
                 ...current,
                 recent: current.recent.filter((item) => item.id !== summary.id),
+                imported: current.imported.filter((item) => item.id !== summary.id),
             }));
             setBenchmarkOpenRequestID((current) => current === summary.id ? null : current);
             setBenchmarkHistoryRefreshKey((current) => current + 1);
@@ -1720,27 +1722,50 @@ function App() {
                         ) : (
                             <p>저장된 프로필에서 모델 하나를 선택해 편집 가능한 4개 테스트를 순차 실행합니다.</p>
                         )}
-                        <section className="benchmark-sidebar-history" aria-label="최근 벤치마크">
-                            <span>최근 벤치마크</span>
-                            <div className="benchmark-sidebar-history-list">
-                                {benchmarkSidebar.isHistoryLoading && <small>기록을 불러오는 중…</small>}
-                                {!benchmarkSidebar.isHistoryLoading && benchmarkSidebar.recent.length === 0 && <small>아직 저장된 벤치마크가 없습니다.</small>}
-                                {benchmarkSidebar.recent.map((item) => (
-                                    <button
-                                        className="benchmark-sidebar-history-item"
-                                        key={item.id}
-                                        type="button"
-                                        disabled={benchmarkBusy}
-                                        onClick={() => setBenchmarkOpenRequestID(item.id)}
-                                        title={`${item.profileName} · ${item.model} · ${item.profileBaseURL}`}
-                                    >
-                                        <strong>{item.profileName} · {item.model}</strong>
-                                        <span>{item.profileBaseURL}</span>
-                                        <small>{item.suiteName} · {item.completedCaseCount}/{item.caseCount}개 · {formatUpdatedAt(item.updatedAt)}</small>
-                                    </button>
-                                ))}
-                            </div>
-                        </section>
+                        <div className="benchmark-sidebar-history-groups">
+                            <section className="benchmark-sidebar-history" aria-label="내 벤치마크">
+                                <span>내 벤치마크</span>
+                                <div className="benchmark-sidebar-history-list">
+                                    {benchmarkSidebar.isHistoryLoading && <small>기록을 불러오는 중…</small>}
+                                    {!benchmarkSidebar.isHistoryLoading && benchmarkSidebar.recent.length === 0 && <small>아직 실행한 벤치마크가 없습니다.</small>}
+                                    {benchmarkSidebar.recent.map((item) => (
+                                        <button
+                                            className="benchmark-sidebar-history-item"
+                                            key={item.id}
+                                            type="button"
+                                            disabled={benchmarkBusy}
+                                            onClick={() => setBenchmarkOpenRequestID(item.id)}
+                                            title={`${item.profileName} · ${item.model} · ${item.profileBaseURL}`}
+                                        >
+                                            <strong>{item.profileName} · {item.model}</strong>
+                                            <span>{item.profileBaseURL}</span>
+                                            <small>{item.suiteName} · {item.completedCaseCount}/{item.caseCount}개 · {formatUpdatedAt(item.updatedAt)}</small>
+                                        </button>
+                                    ))}
+                                </div>
+                            </section>
+                            <section className="benchmark-sidebar-history imported" aria-label="가져온 벤치마크">
+                                <span>가져온 벤치마크</span>
+                                <div className="benchmark-sidebar-history-list">
+                                    {benchmarkSidebar.isHistoryLoading && <small>기록을 불러오는 중…</small>}
+                                    {!benchmarkSidebar.isHistoryLoading && benchmarkSidebar.imported.length === 0 && <small>가져온 벤치마크가 없습니다.</small>}
+                                    {benchmarkSidebar.imported.map((item) => (
+                                        <button
+                                            className="benchmark-sidebar-history-item"
+                                            key={item.id}
+                                            type="button"
+                                            disabled={benchmarkBusy}
+                                            onClick={() => setBenchmarkOpenRequestID(item.id)}
+                                            title={`${item.profileName} · ${item.model} · ${item.profileBaseURL}`}
+                                        >
+                                            <strong>{item.profileName} · {item.model}</strong>
+                                            <span>{item.profileBaseURL}</span>
+                                            <small>{item.suiteName} · {item.completedCaseCount}/{item.caseCount}개 · {formatUpdatedAt(item.updatedAt)}</small>
+                                        </button>
+                                    ))}
+                                </div>
+                            </section>
+                        </div>
                         <small>연결 프로필 {savedConnectionProfiles.length}개 · 기본 1개 포함</small>
                     </section>
                 )}

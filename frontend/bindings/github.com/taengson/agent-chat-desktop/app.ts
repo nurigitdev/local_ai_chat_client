@@ -33,6 +33,14 @@ export function DeleteSavedConnectionProfile(id: string): $CancellablePromise<vo
     return $Call.ByID(4225912054, id);
 }
 
+/**
+ * ImportBenchmarkReport adds the results embedded in an exported Markdown or
+ * HTML benchmark report to the local benchmark history.
+ */
+export function ImportBenchmarkReport(path: string): $CancellablePromise<$models.ModelBenchmark[] | null> {
+    return $Call.ByID(1730891493, path);
+}
+
 export function ListConversations(): $CancellablePromise<$models.ConversationSummary[] | null> {
     return $Call.ByID(1664713955);
 }

@@ -31,6 +31,7 @@ type ModelBenchmarkCase struct {
 
 type ModelBenchmark struct {
 	ID             string               `json:"id"`
+	Imported       bool                 `json:"imported"`
 	ProfileID      string               `json:"profileID"`
 	ProfileName    string               `json:"profileName"`
 	ProfileBaseURL string               `json:"profileBaseURL"`
@@ -44,6 +45,7 @@ type ModelBenchmark struct {
 
 type ModelBenchmarkSummary struct {
 	ID                          string  `json:"id"`
+	Imported                    bool    `json:"imported"`
 	SuiteName                   string  `json:"suiteName"`
 	Model                       string  `json:"model"`
 	ProfileName                 string  `json:"profileName"`
@@ -71,6 +73,7 @@ func (s *modelBenchmarkStore) Create(benchmark ModelBenchmark) (ModelBenchmark, 
 	defer s.mu.Unlock()
 
 	benchmark = normalizeModelBenchmark(benchmark)
+	benchmark.Imported = false
 	if benchmark.ID == "" {
 		benchmark.ID = newConversationID()
 	}
@@ -358,6 +361,7 @@ func modelBenchmarkTitle(benchmark ModelBenchmark) string {
 func modelBenchmarkSummary(benchmark ModelBenchmark) ModelBenchmarkSummary {
 	summary := ModelBenchmarkSummary{
 		ID:             benchmark.ID,
+		Imported:       benchmark.Imported,
 		SuiteName:      modelBenchmarkTitle(benchmark),
 		Model:          benchmark.Model,
 		ProfileName:    benchmark.ProfileName,

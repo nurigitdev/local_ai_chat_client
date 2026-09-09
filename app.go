@@ -328,6 +328,12 @@ func (a *App) DeleteModelBenchmark(id string) error {
 	return a.benchmarks.Delete(id)
 }
 
+// ImportBenchmarkReport adds the results embedded in an exported Markdown or
+// HTML benchmark report to the local benchmark history.
+func (a *App) ImportBenchmarkReport(path string) ([]ModelBenchmark, error) {
+	return a.benchmarks.ImportReport(path)
+}
+
 // SaveBenchmarkExport writes a user-selected benchmark report.
 func (a *App) SaveBenchmarkExport(path string, contents string) error {
 	return saveTextExport(path, contents)

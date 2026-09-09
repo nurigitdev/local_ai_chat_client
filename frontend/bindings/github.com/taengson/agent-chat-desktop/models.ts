@@ -73,6 +73,7 @@ export interface Model {
 
 export interface ModelBenchmark {
     "id": string;
+    "imported": boolean;
     "profileID": string;
     "profileName": string;
     "profileBaseURL": string;
@@ -98,6 +99,7 @@ export interface ModelBenchmarkCase {
 
 export interface ModelBenchmarkSummary {
     "id": string;
+    "imported": boolean;
     "suiteName": string;
     "model": string;
     "profileName": string;

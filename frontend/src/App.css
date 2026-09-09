@@ -131,11 +131,20 @@
     white-space: nowrap;
 }
 
-.benchmark-sidebar-history {
+.benchmark-sidebar-history-groups {
     display: flex;
     min-height: 0;
     overflow: hidden;
     flex: 1;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.benchmark-sidebar-history {
+    display: flex;
+    min-height: 0;
+    overflow: hidden;
+    flex: 1 1 0;
     flex-direction: column;
     gap: 7px;
 }
@@ -145,6 +154,15 @@
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.08em;
+}
+
+.benchmark-sidebar-history.imported > span {
+    color: #54778b;
+}
+
+.benchmark-sidebar-history.imported .benchmark-sidebar-history-list {
+    border-top: 1px solid #dbe5ea;
+    padding-top: 5px;
 }
 
 .benchmark-sidebar-history-list {
@@ -719,6 +737,23 @@ button:disabled {
     font-size: 22px;
     font-weight: 620;
     letter-spacing: -0.03em;
+}
+
+.benchmark-header-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+}
+
+.benchmark-header-actions .secondary-button {
+    min-width: 112px;
+}
+
+.benchmark-import-status {
+    width: 100%;
+    margin: 0;
+    color: #537362;
+    font-size: 11px;
 }
 
 .benchmark-page .error-banner {
