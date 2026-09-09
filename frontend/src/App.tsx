@@ -19,6 +19,7 @@ import type {
 } from '../bindings/github.com/taengson/agent-chat-desktop/models';
 import ModelBenchmarkWorkspace, {type ModelBenchmarkSidebarState} from './ModelBenchmark';
 import OpenRouterModelPicker, {isOpenRouterURL} from './OpenRouterModelPicker';
+import {messagesForModel} from './chatContext';
 import {
     createAttachmentChunks,
     selectAttachmentContent,
@@ -399,15 +400,6 @@ async function readAttachmentContent(file: File, name: string): Promise<Pick<Att
     return {source: content, chunks: createAttachmentChunks(content)};
 }
 
-function messageContentForModel(message: UIMessage): string {
-    const attachmentContent = message.attachments.map((attachment) => (
-        `[첨부 파일: ${attachment.name}]\n${attachment.content}\n[첨부 파일 끝]`
-    ));
-    const request = message.content.trim();
-    if (attachmentContent.length === 0) return request;
-    return [...attachmentContent, request && `[사용자 요청]\n${request}`].filter(Boolean).join('\n\n');
-}
-
 function summaryFromConversation(conversation: Conversation): ConversationSummary {
     return {
         id: conversation.id,
@@ -564,6 +556,7 @@ function AssistantMessageContent({content}: {content: string}) {
 
 function App() {
     const [workspace, setWorkspace] = useState<'chat' | 'benchmark'>('chat');
+    const [sidebarVisible, setSidebarVisible] = useState(true);
     const [benchmarkBusy, setBenchmarkBusy] = useState(false);
     const [benchmarkSidebar, setBenchmarkSidebar] = useState<ModelBenchmarkSidebarState>(emptyBenchmarkSidebar);
     const [benchmarkOpenRequestID, setBenchmarkOpenRequestID] = useState<string | null>(null);
@@ -578,6 +571,7 @@ function App() {
     const [openRouterModelPickerOpen, setOpenRouterModelPickerOpen] = useState(false);
     const [openRouterModelIDs, setOpenRouterModelIDs] = useState<string[]>([]);
     const [modelTokenUsage, setModelTokenUsage] = useState<Record<string, ModelTokenUsage>>({});
+    const [includeConversationHistory, setIncludeConversationHistory] = useState(false);
     const [loadingModels, setLoadingModels] = useState(false);
     const [connectionMessage, setConnectionMessage] = useState('서버 연결 전');
     const [connectionProfileReady, setConnectionProfileReady] = useState(false);
@@ -614,6 +608,7 @@ function App() {
     const activeRequestRef = useRef<string | null>(null);
     const assistantMessageRef = useRef<string | null>(null);
     const activeRequestModelRef = useRef<string | null>(null);
+    const previousSelectedModelRef = useRef<string | null>(null);
     const usageRecordedForRequestRef = useRef<string | null>(null);
     const activeConversationRef = useRef<Conversation | null>(null);
     const messagesRef = useRef<UIMessage[]>([]);
@@ -636,6 +631,7 @@ function App() {
     );
     const usingBuiltInConnectionProfile = Boolean(selectedSavedConnectionProfile?.isBuiltIn);
     const usingOpenRouter = isOpenRouterURL(baseURL);
+    const selectedModelUsage = modelTokenUsage[selectedModel];
 
     const applyOpenRouterModelIDs = useCallback((modelIDs: string[]) => {
         const nextModelIDs = Array.from(new Set(modelIDs.map((modelID) => modelID.trim()).filter(Boolean)));
@@ -647,6 +643,13 @@ function App() {
         if (!usingOpenRouter || models.length === 0 || openRouterModelIDs.length === 0) return;
         setSelectedModel((current) => openRouterModelIDs.includes(current) ? current : '');
     }, [models.length, openRouterModelIDs, usingOpenRouter]);
+
+    useEffect(() => {
+        if (previousSelectedModelRef.current !== null && previousSelectedModelRef.current !== selectedModel) {
+            setModelTokenUsage({});
+        }
+        previousSelectedModelRef.current = selectedModel;
+    }, [selectedModel]);
 
     const handleBenchmarkBusyChange = useCallback((nextBusy: boolean) => {
         setBenchmarkBusy(nextBusy);
@@ -1274,9 +1277,7 @@ function App() {
                 requestID,
                 profile: {baseURL, apiKey},
                 model: selectedModel,
-                messages: requestMessages
-                    .map((message) => ({role: message.role, content: messageContentForModel(message)}))
-                    .filter((message) => message.role === 'user' || message.content !== ''),
+                messages: messagesForModel(requestMessages, includeConversationHistory),
                 benchmark: false,
             };
             await ChatService.StartChat(request);
@@ -1584,10 +1585,7 @@ function App() {
                         </div>
                         <p className="connection-message">{connectionMessage}</p>
                         <label>
-                            <span className="model-select-heading">
-                                <span>사용할 모델</span>
-                                {selectedModel && <span className="model-token-usage">누적 {formatTokenCount(modelTokenUsage[selectedModel]?.totalTokens || 0)} 토큰</span>}
-                            </span>
+                            <span>사용할 모델</span>
                             {usingOpenRouter ? (
                                 <div className="openrouter-model-selection">
                                     <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} disabled={!openRouterModelIDs.length || busy}>
@@ -1614,14 +1612,25 @@ function App() {
     }
 
     return (
-        <div className="app-shell">
+        <div className={`app-shell ${sidebarVisible ? '' : 'sidebar-collapsed'}`}>
             <aside className="sidebar">
-                <div className="brand">
-                    <span className="brand-mark" aria-hidden="true" />
-                    <div>
-                        <strong>Agent Chat</strong>
-                        <span>Local AI desktop</span>
+                <div className="sidebar-header">
+                    <div className="brand">
+                        <span className="brand-mark" aria-hidden="true" />
+                        <div>
+                            <strong>Agent Chat</strong>
+                            <span>Local AI desktop</span>
+                        </div>
                     </div>
+                    <button
+                        className="sidebar-visibility-button"
+                        type="button"
+                        onClick={() => setSidebarVisible(false)}
+                        aria-label="사이드바 숨기기"
+                        title="사이드바 숨기기"
+                    >
+                        <span aria-hidden="true">‹</span>
+                    </button>
                 </div>
 
                 <nav className="workspace-switch" aria-label="작업 공간">
@@ -1698,16 +1707,50 @@ function App() {
                     )}
                 </section>
 
-                <button
-                    className={`sidebar-connection-button ${connectionSettingsOpen ? 'active' : ''}`}
-                    type="button"
-                    onClick={() => setConnectionSettingsOpen(true)}
-                    disabled={busy}
-                >
-                    <span className={`connection-dot ${models.length ? 'online' : ''}`} />
-                    <span>연결 설정</span>
-                    <small>{selectedModel || '모델을 선택하세요'}</small>
-                </button>
+                <section className="sidebar-chat-settings" aria-label="채팅 설정">
+                    <button
+                        className={`sidebar-connection-button ${connectionSettingsOpen ? 'active' : ''}`}
+                        type="button"
+                        onClick={() => setConnectionSettingsOpen(true)}
+                        disabled={busy}
+                    >
+                        <span className={`connection-dot ${models.length ? 'online' : ''}`} />
+                        <span>연결 설정</span>
+                        <small title={selectedModel}>{selectedModel || '모델을 선택하세요'}</small>
+                    </button>
+                    <div className="sidebar-history-setting">
+                        <label className="sidebar-history-toggle">
+                            <span>이전 대화 포함</span>
+                            <input
+                                type="checkbox"
+                                role="switch"
+                                checked={includeConversationHistory}
+                                onChange={(event) => setIncludeConversationHistory(event.target.checked)}
+                                disabled={busy}
+                                aria-describedby="chat-history-description"
+                            />
+                            <span className="sidebar-switch-track" aria-hidden="true" />
+                        </label>
+                        <p id="chat-history-description">
+                            {includeConversationHistory
+                                ? '이 대화의 이전 질문·답변과 첨부 내용도 전송합니다.'
+                                : '현재 질문과 첨부만 전송합니다.'}
+                        </p>
+                    </div>
+                    <div className="sidebar-token-usage" aria-label="현재 모델의 채팅 토큰 사용량">
+                        <div className="sidebar-token-total">
+                            <span>누적 사용량</span>
+                            <strong>{selectedModel ? `${formatTokenCount(selectedModelUsage?.totalTokens || 0)} 토큰` : '—'}</strong>
+                        </div>
+                        {selectedModel && (
+                            <div className="sidebar-token-breakdown">
+                                <span>입력 {formatTokenCount(selectedModelUsage?.promptTokens || 0)}</span>
+                                <span>출력 {formatTokenCount(selectedModelUsage?.completionTokens || 0)}</span>
+                            </div>
+                        )}
+                        <p>모델 변경 또는 앱 재시작 시 초기화</p>
+                    </div>
+                </section>
                     </>
                 ) : (
                     <section className="benchmark-sidebar">
@@ -1770,6 +1813,15 @@ function App() {
                     </section>
                 )}
             </aside>
+            <button
+                className="sidebar-show-button"
+                type="button"
+                onClick={() => setSidebarVisible(true)}
+                aria-label="사이드바 열기"
+                title="사이드바 열기"
+            >
+                <span aria-hidden="true">›</span>
+            </button>
 
             {workspace === 'benchmark' ? (
                 <main className="benchmark-panel">
