@@ -1307,12 +1307,21 @@ function ModelBenchmarkWorkspace({
                 Filters: [{DisplayName: '벤치마크 보고서', Pattern: '*.md;*.html'}],
             });
             if (!path) return;
-            const imported = await ChatService.ImportBenchmarkReport(path) || [];
-            if (!imported.length) return;
-            imported.forEach(upsertHistory);
-            setAnalysisID(imported[0].id);
-            setHomeTab('analysis');
-            setImportMessage(`${imported.length}개의 벤치마크 결과를 가져왔습니다.`);
+            const result = await ChatService.ImportBenchmarkReport(path);
+            const imported = result?.imported || [];
+            const duplicateCount = result?.duplicateCount || 0;
+            if (imported.length) {
+                imported.forEach(upsertHistory);
+                setAnalysisID(imported[0].id);
+                setHomeTab('analysis');
+            }
+            if (imported.length && duplicateCount) {
+                setImportMessage(`${imported.length}개의 벤치마크 결과를 가져왔습니다. 중복 ${duplicateCount}개는 제외했습니다.`);
+            } else if (imported.length) {
+                setImportMessage(`${imported.length}개의 벤치마크 결과를 가져왔습니다.`);
+            } else if (duplicateCount) {
+                setImportMessage(`이미 가져온 벤치마크 결과 ${duplicateCount}개입니다.`);
+            }
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : String(reason));
         } finally {

@@ -328,9 +328,9 @@ func (a *App) DeleteModelBenchmark(id string) error {
 	return a.benchmarks.Delete(id)
 }
 
-// ImportBenchmarkReport adds the results embedded in an exported Markdown or
+// ImportBenchmarkReport adds new results embedded in an exported Markdown or
 // HTML benchmark report to the local benchmark history.
-func (a *App) ImportBenchmarkReport(path string) ([]ModelBenchmark, error) {
+func (a *App) ImportBenchmarkReport(path string) (ModelBenchmarkImportResult, error) {
 	return a.benchmarks.ImportReport(path)
 }
 

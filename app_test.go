@@ -509,12 +509,16 @@ func TestModelBenchmarkStoreImportsSharedReportAndPreservesMetrics(t *testing.T)
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	imported, err := store.ImportReport(path)
+	importResult, err := store.ImportReport(path)
 	if err != nil {
 		t.Fatalf("ImportReport() error = %v", err)
 	}
+	imported := importResult.Imported
 	if len(imported) != 1 || imported[0].ID != source.ID || !imported[0].Imported {
 		t.Fatalf("ImportReport() = %#v, want source ID %q", imported, source.ID)
+	}
+	if importResult.DuplicateCount != 0 {
+		t.Fatalf("ImportReport().DuplicateCount = %d, want 0", importResult.DuplicateCount)
 	}
 	opened, err := store.Open(source.ID)
 	if err != nil {
@@ -530,15 +534,44 @@ func TestModelBenchmarkStoreImportsSharedReportAndPreservesMetrics(t *testing.T)
 	if err != nil {
 		t.Fatalf("second ImportReport() error = %v", err)
 	}
-	if len(importedAgain) != 1 || importedAgain[0].ID == source.ID {
-		t.Fatalf("second ImportReport() = %#v, want a distinct local ID", importedAgain)
+	if len(importedAgain.Imported) != 0 || importedAgain.DuplicateCount != 1 {
+		t.Fatalf("second ImportReport() = %#v, want one skipped duplicate", importedAgain)
 	}
 	summaries, err := store.List()
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
-	if len(summaries) != 2 || !summaries[0].Imported || !summaries[1].Imported {
-		t.Fatalf("List() = %#v, want two imported records", summaries)
+	if len(summaries) != 1 || !summaries[0].Imported {
+		t.Fatalf("List() = %#v, want one imported record", summaries)
+	}
+}
+
+func TestModelBenchmarkStoreImportsOnlyNewResultsFromMixedReport(t *testing.T) {
+	store := newModelBenchmarkStore(t.TempDir())
+	source := completedBenchmarkForReport("shared-result")
+	if _, err := store.ImportReport(writeBenchmarkReport(t, source)); err != nil {
+		t.Fatalf("first ImportReport() error = %v", err)
+	}
+
+	newResult := completedBenchmarkForReport(source.ID)
+	newResult.Model = "new-model"
+	newResult.CreatedAt = "2026-09-10T01:02:03Z"
+	newResult.UpdatedAt = "2026-09-10T01:02:04Z"
+	newResult.Cases[0].ID = "new-case"
+
+	result, err := store.ImportReport(writeBenchmarkReport(t, source, newResult))
+	if err != nil {
+		t.Fatalf("mixed ImportReport() error = %v", err)
+	}
+	if len(result.Imported) != 1 || result.Imported[0].ID == source.ID || result.DuplicateCount != 1 {
+		t.Fatalf("mixed ImportReport() = %#v, want one new result with a new ID and one skipped duplicate", result)
+	}
+	summaries, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("List() count = %d, want 2", len(summaries))
 	}
 }
 
@@ -554,13 +587,31 @@ func TestModelBenchmarkStoreImportsExistingLocalMarkdownRecord(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	imported, err := store.ImportReport(path)
+	importResult, err := store.ImportReport(path)
 	if err != nil {
 		t.Fatalf("ImportReport() error = %v", err)
 	}
+	imported := importResult.Imported
 	if len(imported) != 1 || imported[0].ID != source.ID || !imported[0].Imported {
 		t.Fatalf("ImportReport() = %#v, want %#v", imported, source)
 	}
+}
+
+func writeBenchmarkReport(t *testing.T, records ...ModelBenchmark) string {
+	t.Helper()
+	payload, err := json.Marshal(benchmarkReportPayload{
+		Version: benchmarkReportFormatVersion,
+		Records: records,
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "shared-benchmark.html")
+	contents := "<html><body><!-- agent-chat-benchmark-report-v1 " + base64.StdEncoding.EncodeToString(payload) + " --></body></html>"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
 }
 
 func TestReadBenchmarkReportRejectsReportsWithoutImportData(t *testing.T) {

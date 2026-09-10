@@ -18,6 +18,7 @@ export type {
     Model,
     ModelBenchmark,
     ModelBenchmarkCase,
+    ModelBenchmarkImportResult,
     ModelBenchmarkSummary,
     ResponseMetrics,
     SavedConnectionProfile,

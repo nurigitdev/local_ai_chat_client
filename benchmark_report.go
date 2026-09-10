@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -26,10 +27,17 @@ type benchmarkReportPayload struct {
 	Records []ModelBenchmark `json:"records"`
 }
 
-func (s *modelBenchmarkStore) ImportReport(path string) ([]ModelBenchmark, error) {
+// ModelBenchmarkImportResult describes the records added from a report and
+// how many matching records were already in the local history.
+type ModelBenchmarkImportResult struct {
+	Imported       []ModelBenchmark `json:"imported"`
+	DuplicateCount int              `json:"duplicateCount"`
+}
+
+func (s *modelBenchmarkStore) ImportReport(path string) (ModelBenchmarkImportResult, error) {
 	records, err := readBenchmarkReport(path)
 	if err != nil {
-		return nil, err
+		return ModelBenchmarkImportResult{}, err
 	}
 	return s.importRecords(records)
 }
@@ -99,39 +107,94 @@ func parseBenchmarkReportPayload(encoded []byte) ([]ModelBenchmark, error) {
 	return payload.Records, nil
 }
 
-func (s *modelBenchmarkStore) importRecords(records []ModelBenchmark) ([]ModelBenchmark, error) {
+func (s *modelBenchmarkStore) importRecords(records []ModelBenchmark) (ModelBenchmarkImportResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if len(records) == 0 {
-		return nil, errors.New("가져올 벤치마크 결과가 없습니다")
+		return ModelBenchmarkImportResult{}, errors.New("가져올 벤치마크 결과가 없습니다")
 	}
 	directory, err := s.directory()
 	if err != nil {
-		return nil, err
+		return ModelBenchmarkImportResult{}, err
 	}
 
-	prepared := make([]ModelBenchmark, len(records))
+	fingerprints, err := benchmarkImportFingerprints(directory)
+	if err != nil {
+		return ModelBenchmarkImportResult{}, err
+	}
+
+	prepared := make([]ModelBenchmark, 0, len(records))
 	usedIDs := make(map[string]struct{}, len(records))
+	result := ModelBenchmarkImportResult{Imported: prepared}
 	for index, record := range records {
 		record = normalizeModelBenchmark(record)
 		record.Imported = true
 		if err := validateModelBenchmark(record); err != nil {
-			return nil, fmt.Errorf("%d번째 벤치마크 결과를 가져올 수 없습니다: %w", index+1, err)
+			return ModelBenchmarkImportResult{}, fmt.Errorf("%d번째 벤치마크 결과를 가져올 수 없습니다: %w", index+1, err)
+		}
+		fingerprint, err := benchmarkImportFingerprint(record)
+		if err != nil {
+			return ModelBenchmarkImportResult{}, fmt.Errorf("%d번째 벤치마크 결과를 확인할 수 없습니다: %w", index+1, err)
+		}
+		if _, exists := fingerprints[fingerprint]; exists {
+			result.DuplicateCount++
+			continue
 		}
 		for benchmarkIDInUse(directory, record.ID, usedIDs) {
 			record.ID = newConversationID()
 		}
 		usedIDs[record.ID] = struct{}{}
-		prepared[index] = record
+		fingerprints[fingerprint] = struct{}{}
+		prepared = append(prepared, record)
 	}
 
 	for _, record := range prepared {
 		if err := s.saveLocked(record); err != nil {
-			return nil, err
+			return ModelBenchmarkImportResult{}, err
 		}
 	}
-	return prepared, nil
+	result.Imported = prepared
+	return result, nil
+}
+
+func benchmarkImportFingerprints(directory string) (map[[sha256.Size]byte]struct{}, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, fmt.Errorf("저장된 벤치마크 결과를 확인할 수 없습니다: %w", err)
+	}
+
+	fingerprints := make(map[[sha256.Size]byte]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".md" {
+			continue
+		}
+		contents, err := os.ReadFile(filepath.Join(directory, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("저장된 벤치마크 결과를 읽을 수 없습니다: %w", err)
+		}
+		benchmark, err := parseModelBenchmark(contents)
+		if err != nil {
+			return nil, fmt.Errorf("저장된 벤치마크 결과를 읽을 수 없습니다: %w", err)
+		}
+		fingerprint, err := benchmarkImportFingerprint(benchmark)
+		if err != nil {
+			return nil, fmt.Errorf("저장된 벤치마크 결과를 확인할 수 없습니다: %w", err)
+		}
+		fingerprints[fingerprint] = struct{}{}
+	}
+	return fingerprints, nil
+}
+
+func benchmarkImportFingerprint(benchmark ModelBenchmark) ([sha256.Size]byte, error) {
+	benchmark = normalizeModelBenchmark(benchmark)
+	benchmark.ID = ""
+	benchmark.Imported = false
+	payload, err := json.Marshal(benchmark)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(payload), nil
 }
 
 func benchmarkIDInUse(directory, id string, usedIDs map[string]struct{}) bool {

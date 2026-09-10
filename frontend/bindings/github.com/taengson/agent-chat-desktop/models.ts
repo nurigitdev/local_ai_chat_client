@@ -97,6 +97,15 @@ export interface ModelBenchmarkCase {
     "error"?: string;
 }
 
+/**
+ * ModelBenchmarkImportResult describes the records added from a report and
+ * how many matching records were already in the local history.
+ */
+export interface ModelBenchmarkImportResult {
+    "imported": ModelBenchmark[] | null;
+    "duplicateCount": number;
+}
+
 export interface ModelBenchmarkSummary {
     "id": string;
     "imported": boolean;
