@@ -12,6 +12,16 @@
 - 질문지 프로필 기반 모델 벤치마크, 누적 결과, 최대 세 기록 비교, Markdown·HTML 보고서 내보내기와 가져오기
 - Markdown 기반의 로컬 대화·벤치마크 기록 저장
 
+## 화면 미리보기
+
+### 채팅
+
+![Agent Chat 채팅 화면](docs/chat-screen.png)
+
+### 모델 실험실
+
+![Agent Chat 모델 실험실 화면](docs/benchmark-screen.png)
+
 ## 빠른 시작
 
 소스에서 실행하려면 Git, Go 1.25 이상, Node.js 20.19 이상 또는 22.12 이상이 필요합니다. macOS에는 Xcode Command Line Tools, Linux에는 GTK4·WebKitGTK 6.0 개발 패키지가 추가로 필요합니다.
