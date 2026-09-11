@@ -281,18 +281,31 @@ function benchmarkExportFormatInfo(format: BenchmarkExportFormat): {label: strin
         : {label: 'Markdown', extension: 'md', filterName: 'Markdown 문서'};
 }
 
-function benchmarkExportFilename(kind: BenchmarkExportKind, format: BenchmarkExportFormat): string {
-    const now = new Date();
-    const parts = [
-        now.getFullYear(),
-        String(now.getMonth() + 1).padStart(2, '0'),
-        String(now.getDate()).padStart(2, '0'),
-        String(now.getHours()).padStart(2, '0'),
-        String(now.getMinutes()).padStart(2, '0'),
-        String(now.getSeconds()).padStart(2, '0'),
-    ];
-    const timestamp = `${parts.slice(0, 3).join('')}-${parts.slice(3).join('')}`;
-    return `agent-chat-benchmark-${kind}-${timestamp}.${benchmarkExportFormatInfo(format).extension}`;
+function benchmarkExportFilenamePart(value: string, fallback: string): string {
+    const normalized = value
+        .normalize('NFC')
+        .replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ')
+        .replace(/_{2,}/g, '_')
+        .replace(/\s+/g, ' ')
+        .replace(/[. ]+$/g, '')
+        .trim();
+    return normalized || fallback;
+}
+
+function benchmarkExportFilename(kind: BenchmarkExportKind, format: BenchmarkExportFormat, records: ModelBenchmark[]): string {
+    const joinedPart = (value: (record: ModelBenchmark) => string, fallback: string) => benchmarkExportFilenamePart(
+        [...new Set(records.map(value).filter(Boolean))].join(' vs '),
+        fallback,
+    );
+    const model = joinedPart((record) => record.model, 'model');
+    const suite = joinedPart((record) => record.suiteName, 'questionnaire');
+    if (kind === 'comparison' && records.length > 1) {
+        const primaryModel = benchmarkExportFilenamePart(records[0].model, 'model');
+        const otherModelCount = records.length - 1;
+        const otherModels = `${otherModelCount}other${otherModelCount === 1 ? '' : 's'}`;
+        return `benchmark_${primaryModel}_vs_${otherModels}__${suite}.${benchmarkExportFormatInfo(format).extension}`;
+    }
+    return `benchmark_${model}__${suite}.${benchmarkExportFormatInfo(format).extension}`;
 }
 
 function base64EncodeUTF8(value: string): string {
@@ -798,6 +811,7 @@ function ModelBenchmarkWorkspace({
     const [error, setError] = useState('');
     const [exportingFormat, setExportingFormat] = useState<BenchmarkExportFormat | null>(null);
     const [exportMessage, setExportMessage] = useState('');
+    const [runExportMenuOpen, setRunExportMenuOpen] = useState(false);
     const [isImporting, setIsImporting] = useState(false);
     const [importMessage, setImportMessage] = useState('');
 
@@ -1209,6 +1223,8 @@ function ModelBenchmarkWorkspace({
         };
         try {
             setError('');
+            setExportMessage('');
+            setRunExportMenuOpen(false);
             setIsRunning(true);
             runProfileRef.current = {baseURL: selectedProfile.baseURL, apiKey};
             const created = await ChatService.CreateModelBenchmark(initial);
@@ -1240,6 +1256,8 @@ function ModelBenchmarkWorkspace({
         void (async () => {
             try {
                 setError('');
+                setExportMessage('');
+                setRunExportMenuOpen(false);
                 const opened = await ChatService.OpenModelBenchmark(openBenchmarkID);
                 replaceBenchmark(opened);
                 setView('run');
@@ -1253,6 +1271,7 @@ function ModelBenchmarkWorkspace({
 
     function goHome() {
         setView('home');
+        setRunExportMenuOpen(false);
         if (!isRunning) {
             replaceBenchmark(null);
         }
@@ -1260,11 +1279,16 @@ function ModelBenchmarkWorkspace({
     }
 
     function showRun() {
-        if (benchmark) setView('run');
+        if (!benchmark) return;
+        setExportMessage('');
+        setRunExportMenuOpen(false);
+        setView('run');
     }
 
     function showStoredBenchmark(record: ModelBenchmark) {
         if (isRunning) return;
+        setExportMessage('');
+        setRunExportMenuOpen(false);
         replaceBenchmark(record);
         setView('run');
     }
@@ -1279,7 +1303,7 @@ function ModelBenchmarkWorkspace({
             const path = await Dialogs.SaveFile({
                 Title: `${benchmarkExportKindLabel(kind)} ${formatInfo.label} 저장`,
                 ButtonText: '보고서 저장',
-                Filename: benchmarkExportFilename(kind, format),
+                Filename: benchmarkExportFilename(kind, format, records),
                 Filters: [{DisplayName: formatInfo.filterName, Pattern: `*.${formatInfo.extension}`}],
             });
             if (!path) return;
@@ -1362,6 +1386,7 @@ function ModelBenchmarkWorkspace({
     if (benchmark && view === 'run') {
         const summary = benchmarkSummary(benchmark);
         const stoppedRun = benchmark.status === 'running' && !isRunning;
+        const canExportRun = !isRunning && benchmark.status === 'completed';
         return (
             <section className="benchmark-page" aria-label="모델 벤치마크">
                 <header className="benchmark-header">
@@ -1371,6 +1396,36 @@ function ModelBenchmarkWorkspace({
                     </div>
                     <div className="benchmark-run-actions">
                         <button className="text-button" type="button" onClick={goHome}>모델 실험실 홈</button>
+                        {canExportRun && (
+                            <div className="benchmark-run-export">
+                                <button
+                                    className="benchmark-run-export-trigger"
+                                    type="button"
+                                    aria-expanded={runExportMenuOpen}
+                                    aria-controls="benchmark-run-export-menu"
+                                    onClick={() => setRunExportMenuOpen((current) => !current)}
+                                    disabled={exportingFormat !== null}
+                                >
+                                    {exportingFormat ? '저장 창 여는 중…' : '내보내기'} <span aria-hidden="true">⌄</span>
+                                </button>
+                                {runExportMenuOpen && (
+                                    <div className="benchmark-run-export-menu" id="benchmark-run-export-menu" role="group" aria-label="결과 보고서 형식">
+                                        <button type="button" onClick={() => {
+                                            setRunExportMenuOpen(false);
+                                            void exportBenchmarkReport('analysis', 'html', [benchmark]);
+                                        }}>
+                                            HTML 보고서
+                                        </button>
+                                        <button type="button" onClick={() => {
+                                            setRunExportMenuOpen(false);
+                                            void exportBenchmarkReport('analysis', 'markdown', [benchmark]);
+                                        }}>
+                                            Markdown
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
                         {!isRunning && (
                             <div className="benchmark-destructive-action">
                                 <button className="text-button danger" type="button" onClick={() => onRequestBenchmarkDelete(summary)}>기록 삭제</button>
@@ -1379,6 +1434,7 @@ function ModelBenchmarkWorkspace({
                     </div>
                 </header>
                 {error && <div className="error-banner" role="alert">{error}</div>}
+                {exportMessage && <p className="benchmark-run-export-status" role="status">{exportMessage}</p>}
                 <section className="benchmark-run-card">
                     <span>{benchmark.suiteName}</span>
                     <h2>{benchmark.model}</h2>
