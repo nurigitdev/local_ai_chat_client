@@ -26,6 +26,11 @@ import {
     textByteSize,
     type AttachmentChunk,
 } from './attachmentContent';
+import {
+    reasoningEffortOptions,
+    reasoningEffortWarning,
+    type ReasoningEffort,
+} from './reasoningEffort';
 import './App.css';
 
 type Role = 'user' | 'assistant';
@@ -593,6 +598,7 @@ function App() {
     const [conversationTitleDraft, setConversationTitleDraft] = useState('');
     const [messages, setMessages] = useState<UIMessage[]>([]);
     const [input, setInput] = useState('');
+    const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('');
     const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
     const [busy, setBusy] = useState(false);
     const [cancelling, setCancelling] = useState(false);
@@ -632,6 +638,7 @@ function App() {
     const usingBuiltInConnectionProfile = Boolean(selectedSavedConnectionProfile?.isBuiltIn);
     const usingOpenRouter = isOpenRouterURL(baseURL);
     const selectedModelUsage = modelTokenUsage[selectedModel];
+    const chatReasoningWarning = reasoningEffortWarning(reasoningEffort);
 
     const applyOpenRouterModelIDs = useCallback((modelIDs: string[]) => {
         const nextModelIDs = Array.from(new Set(modelIDs.map((modelID) => modelID.trim()).filter(Boolean)));
@@ -1278,6 +1285,7 @@ function App() {
                 profile: {baseURL, apiKey},
                 model: selectedModel,
                 messages: messagesForModel(requestMessages, includeConversationHistory),
+                reasoningEffort,
                 benchmark: false,
             };
             await ChatService.StartChat(request);
@@ -1737,19 +1745,6 @@ function App() {
                                 : '현재 질문과 첨부만 전송합니다.'}
                         </p>
                     </div>
-                    <div className="sidebar-token-usage" aria-label="현재 모델의 채팅 토큰 사용량">
-                        <div className="sidebar-token-total">
-                            <span>누적 사용량</span>
-                            <strong>{selectedModel ? `${formatTokenCount(selectedModelUsage?.totalTokens || 0)} 토큰` : '—'}</strong>
-                        </div>
-                        {selectedModel && (
-                            <div className="sidebar-token-breakdown">
-                                <span>입력 {formatTokenCount(selectedModelUsage?.promptTokens || 0)}</span>
-                                <span>출력 {formatTokenCount(selectedModelUsage?.completionTokens || 0)}</span>
-                            </div>
-                        )}
-                        <p>모델 변경 또는 앱 재시작 시 초기화</p>
-                    </div>
                 </section>
                     </>
                 ) : (
@@ -1965,6 +1960,34 @@ function App() {
                     <div className="composer-area">
                     {error && <div className="error-banner" role="alert">{error}</div>}
                     <form className="composer" onSubmit={sendMessage}>
+                        <div className="composer-reasoning-control">
+                            <label htmlFor="chat-reasoning-effort">추론 강도</label>
+                            <select
+                                id="chat-reasoning-effort"
+                                value={reasoningEffort}
+                                onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}
+                                disabled={busy}
+                            >
+                                {reasoningEffortOptions.map((option) => (
+                                    <option key={option.value || 'auto'} value={option.value}>{option.label}</option>
+                                ))}
+                            </select>
+                            {chatReasoningWarning && (
+                                <span className="composer-reasoning-warning" role="status" title={chatReasoningWarning} aria-label={chatReasoningWarning}>
+                                    ⚠ 주의
+                                </span>
+                            )}
+                            <div className="composer-token-usage" aria-label="현재 모델의 누적 채팅 토큰 사용량">
+                                <span>현재 모델 누적</span>
+                                {selectedModelUsage ? (
+                                    <strong>
+                                        입력 {formatTokenCount(selectedModelUsage.promptTokens)} · 출력 {formatTokenCount(selectedModelUsage.completionTokens)} · 합계 {formatTokenCount(selectedModelUsage.totalTokens)}
+                                    </strong>
+                                ) : (
+                                    <strong>{selectedModel ? '사용량 없음' : '모델 미선택'}</strong>
+                                )}
+                            </div>
+                        </div>
                         <input
                             ref={attachmentInputRef}
                             className="attachment-file-input"

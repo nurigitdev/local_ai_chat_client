@@ -30,17 +30,18 @@ type ModelBenchmarkCase struct {
 }
 
 type ModelBenchmark struct {
-	ID             string               `json:"id"`
-	Imported       bool                 `json:"imported"`
-	ProfileID      string               `json:"profileID"`
-	ProfileName    string               `json:"profileName"`
-	ProfileBaseURL string               `json:"profileBaseURL"`
-	Model          string               `json:"model"`
-	SuiteName      string               `json:"suiteName"`
-	Status         string               `json:"status"`
-	CreatedAt      string               `json:"createdAt"`
-	UpdatedAt      string               `json:"updatedAt"`
-	Cases          []ModelBenchmarkCase `json:"cases"`
+	ID              string               `json:"id"`
+	Imported        bool                 `json:"imported"`
+	ProfileID       string               `json:"profileID"`
+	ProfileName     string               `json:"profileName"`
+	ProfileBaseURL  string               `json:"profileBaseURL"`
+	Model           string               `json:"model"`
+	ReasoningEffort string               `json:"reasoningEffort,omitempty"`
+	SuiteName       string               `json:"suiteName"`
+	Status          string               `json:"status"`
+	CreatedAt       string               `json:"createdAt"`
+	UpdatedAt       string               `json:"updatedAt"`
+	Cases           []ModelBenchmarkCase `json:"cases"`
 }
 
 type ModelBenchmarkSummary struct {
@@ -48,6 +49,7 @@ type ModelBenchmarkSummary struct {
 	Imported                    bool    `json:"imported"`
 	SuiteName                   string  `json:"suiteName"`
 	Model                       string  `json:"model"`
+	ReasoningEffort             string  `json:"reasoningEffort,omitempty"`
 	ProfileName                 string  `json:"profileName"`
 	ProfileBaseURL              string  `json:"profileBaseURL"`
 	Status                      string  `json:"status"`
@@ -240,6 +242,7 @@ func normalizeModelBenchmark(benchmark ModelBenchmark) ModelBenchmark {
 	benchmark.ProfileName = normalizeProfileName(benchmark.ProfileName)
 	benchmark.ProfileBaseURL = strings.TrimSpace(benchmark.ProfileBaseURL)
 	benchmark.Model = strings.TrimSpace(benchmark.Model)
+	benchmark.ReasoningEffort = strings.TrimSpace(benchmark.ReasoningEffort)
 	benchmark.SuiteName = strings.TrimSpace(benchmark.SuiteName)
 	benchmark.Status = strings.TrimSpace(benchmark.Status)
 	for index := range benchmark.Cases {
@@ -264,6 +267,9 @@ func validateModelBenchmark(benchmark ModelBenchmark) error {
 	}
 	if benchmark.Model == "" || len([]rune(benchmark.Model)) > 512 {
 		return errors.New("올바른 모델을 선택해 주세요")
+	}
+	if _, err := normalizeReasoningEffort(benchmark.ReasoningEffort); err != nil {
+		return err
 	}
 	if benchmark.SuiteName == "" || len([]rune(benchmark.SuiteName)) > 120 {
 		return errors.New("올바른 벤치마크 이름이 필요합니다")
@@ -325,6 +331,12 @@ func marshalModelBenchmark(benchmark ModelBenchmark) ([]byte, error) {
 	builder.WriteString(benchmark.ProfileName)
 	builder.WriteString("\n\n")
 	builder.WriteString(benchmark.ProfileBaseURL)
+	builder.WriteString("\n\n## 추론 강도\n\n")
+	if benchmark.ReasoningEffort == "" {
+		builder.WriteString("자동 (서버 기본값)")
+	} else {
+		builder.WriteString(benchmark.ReasoningEffort)
+	}
 	builder.WriteString("\n\n## 테스트 항목\n")
 	for _, benchmarkCase := range benchmark.Cases {
 		builder.WriteString("\n### ")
@@ -360,15 +372,16 @@ func modelBenchmarkTitle(benchmark ModelBenchmark) string {
 
 func modelBenchmarkSummary(benchmark ModelBenchmark) ModelBenchmarkSummary {
 	summary := ModelBenchmarkSummary{
-		ID:             benchmark.ID,
-		Imported:       benchmark.Imported,
-		SuiteName:      modelBenchmarkTitle(benchmark),
-		Model:          benchmark.Model,
-		ProfileName:    benchmark.ProfileName,
-		ProfileBaseURL: benchmark.ProfileBaseURL,
-		Status:         benchmark.Status,
-		UpdatedAt:      benchmark.UpdatedAt,
-		CaseCount:      len(benchmark.Cases),
+		ID:              benchmark.ID,
+		Imported:        benchmark.Imported,
+		SuiteName:       modelBenchmarkTitle(benchmark),
+		Model:           benchmark.Model,
+		ReasoningEffort: benchmark.ReasoningEffort,
+		ProfileName:     benchmark.ProfileName,
+		ProfileBaseURL:  benchmark.ProfileBaseURL,
+		Status:          benchmark.Status,
+		UpdatedAt:       benchmark.UpdatedAt,
+		CaseCount:       len(benchmark.Cases),
 	}
 	var totalDuration int64
 	var firstTokenDuration int64

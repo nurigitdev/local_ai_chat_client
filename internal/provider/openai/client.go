@@ -33,8 +33,9 @@ type Message struct {
 }
 
 type ChatRequest struct {
-	Model    string
-	Messages []Message
+	Model           string
+	Messages        []Message
+	ReasoningEffort string
 }
 
 type TokenUsage struct {
@@ -109,14 +110,15 @@ func (c *Client) ListModels(ctx context.Context) ([]Model, error) {
 
 func (c *Client) StreamChat(ctx context.Context, input ChatRequest, onChunk func(StreamChunk)) error {
 	payload, err := json.Marshal(struct {
-		Model         string    `json:"model"`
-		Messages      []Message `json:"messages"`
-		Stream        bool      `json:"stream"`
-		StreamOptions struct {
+		Model           string    `json:"model"`
+		Messages        []Message `json:"messages"`
+		Stream          bool      `json:"stream"`
+		ReasoningEffort string    `json:"reasoning_effort,omitempty"`
+		StreamOptions   struct {
 			IncludeUsage bool `json:"include_usage"`
 		} `json:"stream_options"`
 	}{
-		Model: input.Model, Messages: input.Messages, Stream: true,
+		Model: input.Model, Messages: input.Messages, Stream: true, ReasoningEffort: input.ReasoningEffort,
 		StreamOptions: struct {
 			IncludeUsage bool `json:"include_usage"`
 		}{IncludeUsage: true},

@@ -83,7 +83,8 @@ func TestStreamChat(t *testing.T) {
 			t.Fatalf("path = %q, want /v1/chat/completions", request.URL.Path)
 		}
 		var payload struct {
-			StreamOptions struct {
+			ReasoningEffort string `json:"reasoning_effort"`
+			StreamOptions   struct {
 				IncludeUsage bool `json:"include_usage"`
 			} `json:"stream_options"`
 		}
@@ -92,6 +93,9 @@ func TestStreamChat(t *testing.T) {
 		}
 		if !payload.StreamOptions.IncludeUsage {
 			t.Fatal("stream_options.include_usage = false, want true")
+		}
+		if payload.ReasoningEffort != "xhigh" {
+			t.Fatalf("reasoning_effort = %q, want xhigh", payload.ReasoningEffort)
 		}
 		body := "data: {\"choices\":[{\"delta\":{\"content\":\"안녕\"}}]}\n\n" +
 			"data: {\"choices\":[{\"delta\":{\"content\":\"하세요\"}}]}\n\n" +
@@ -106,8 +110,9 @@ func TestStreamChat(t *testing.T) {
 	}
 	var chunks []StreamChunk
 	err = client.StreamChat(context.Background(), ChatRequest{
-		Model:    "local-model",
-		Messages: []Message{{Role: "user", Content: "테스트"}},
+		Model:           "local-model",
+		Messages:        []Message{{Role: "user", Content: "테스트"}},
+		ReasoningEffort: "xhigh",
 	}, func(chunk StreamChunk) {
 		chunks = append(chunks, chunk)
 	})
@@ -127,6 +132,29 @@ func TestStreamChat(t *testing.T) {
 	}
 	if usage == nil || *usage != (TokenUsage{PromptTokens: 12, CompletionTokens: 3, TotalTokens: 15}) {
 		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestStreamChatOmitsAutomaticReasoningEffort(t *testing.T) {
+	httpClient := testClient(func(request *http.Request) (*http.Response, error) {
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if _, exists := payload["reasoning_effort"]; exists {
+			t.Fatal("reasoning_effort was sent for automatic mode")
+		}
+		return testResponse(http.StatusOK, "text/event-stream", "data: [DONE]\n\n"), nil
+	})
+
+	client, err := NewClient("http://localhost:8000/v1", "", httpClient)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if err := client.StreamChat(context.Background(), ChatRequest{
+		Model: "local-model", Messages: []Message{{Role: "user", Content: "테스트"}},
+	}, func(StreamChunk) {}); err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
 	}
 }
 

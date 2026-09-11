@@ -426,15 +426,30 @@ func TestStreamingHTTPClientHasNoAbsoluteTimeout(t *testing.T) {
 	}
 }
 
+func TestStartChatRejectsInvalidReasoningEffort(t *testing.T) {
+	app := NewApp()
+	err := app.StartChat(ChatRequest{
+		RequestID:       "invalid-reasoning-effort",
+		Profile:         ConnectionProfile{BaseURL: "http://localhost:8000"},
+		Model:           "test-model",
+		Messages:        []ChatMessage{{Role: "user", Content: "테스트"}},
+		ReasoningEffort: "extreme",
+	})
+	if err == nil || err.Error() != "올바르지 않은 추론 강도입니다" {
+		t.Fatalf("StartChat() error = %v", err)
+	}
+}
+
 func TestModelBenchmarkStoreCreatesSavesAndOpensBenchmark(t *testing.T) {
 	store := newModelBenchmarkStore(t.TempDir())
 	benchmark, err := store.Create(ModelBenchmark{
-		ProfileID:      "profile-1",
-		ProfileName:    "로컬 vLLM",
-		ProfileBaseURL: "http://localhost:8000",
-		Model:          "model-a",
-		SuiteName:      "기본 실용 벤치마크",
-		Status:         "running",
+		ProfileID:       "profile-1",
+		ProfileName:     "로컬 vLLM",
+		ProfileBaseURL:  "http://localhost:8000",
+		Model:           "model-a",
+		ReasoningEffort: "high",
+		SuiteName:       "기본 실용 벤치마크",
+		Status:          "running",
 		Cases: []ModelBenchmarkCase{
 			{ID: "case-1", Category: "지시 이행", Title: "구조화된 출력", Prompt: "JSON 배열만 출력", Status: "pending"},
 			{ID: "case-2", Category: "추론", Title: "제약 조건", Prompt: "가능한 순서를 제시", Status: "pending"},
@@ -470,7 +485,7 @@ func TestModelBenchmarkStoreCreatesSavesAndOpensBenchmark(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	if opened.Model != "model-a" || len(opened.Cases) != 2 || opened.Cases[0].Content != "첫 번째 응답" {
+	if opened.Model != "model-a" || opened.ReasoningEffort != "high" || len(opened.Cases) != 2 || opened.Cases[0].Content != "첫 번째 응답" {
 		t.Fatalf("Open() = %#v", opened)
 	}
 
@@ -478,7 +493,7 @@ func TestModelBenchmarkStoreCreatesSavesAndOpensBenchmark(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
-	if len(summaries) != 1 || summaries[0].Model != "model-a" || summaries[0].CaseCount != 2 || summaries[0].CompletedCaseCount != 2 {
+	if len(summaries) != 1 || summaries[0].Model != "model-a" || summaries[0].ReasoningEffort != "high" || summaries[0].CaseCount != 2 || summaries[0].CompletedCaseCount != 2 {
 		t.Fatalf("List() = %#v", summaries)
 	}
 	if summaries[0].ProfileName != "로컬 vLLM" || summaries[0].ProfileBaseURL != "http://localhost:8000" {

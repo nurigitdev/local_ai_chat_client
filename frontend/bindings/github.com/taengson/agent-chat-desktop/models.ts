@@ -33,6 +33,7 @@ export interface ChatRequest {
     "profile": ConnectionProfile;
     "model": string;
     "messages": ChatMessage[] | null;
+    "reasoningEffort"?: string;
     "benchmark": boolean;
 }
 
@@ -78,6 +79,7 @@ export interface ModelBenchmark {
     "profileName": string;
     "profileBaseURL": string;
     "model": string;
+    "reasoningEffort"?: string;
     "suiteName": string;
     "status": string;
     "createdAt": string;
@@ -111,6 +113,7 @@ export interface ModelBenchmarkSummary {
     "imported": boolean;
     "suiteName": string;
     "model": string;
+    "reasoningEffort"?: string;
     "profileName": string;
     "profileBaseURL": string;
     "status": string;

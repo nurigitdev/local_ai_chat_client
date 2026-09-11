@@ -24,6 +24,16 @@ const (
 	chatOutputIdleTimeout       = 5 * time.Minute
 )
 
+func normalizeReasoningEffort(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		return value, nil
+	default:
+		return "", errors.New("올바르지 않은 추론 강도입니다")
+	}
+}
+
 type streamTimeoutPolicy struct {
 	firstOutputTimeout time.Duration
 	outputIdleTimeout  time.Duration
@@ -176,11 +186,12 @@ type ChatMessage struct {
 }
 
 type ChatRequest struct {
-	RequestID string            `json:"requestID"`
-	Profile   ConnectionProfile `json:"profile"`
-	Model     string            `json:"model"`
-	Messages  []ChatMessage     `json:"messages"`
-	Benchmark bool              `json:"benchmark"`
+	RequestID       string            `json:"requestID"`
+	Profile         ConnectionProfile `json:"profile"`
+	Model           string            `json:"model"`
+	Messages        []ChatMessage     `json:"messages"`
+	ReasoningEffort string            `json:"reasoningEffort,omitempty"`
+	Benchmark       bool              `json:"benchmark"`
 }
 
 type ChatEvent struct {
@@ -368,6 +379,10 @@ func saveTextExport(path string, contents string) error {
 func (a *App) StartChat(request ChatRequest) error {
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	request.Model = strings.TrimSpace(request.Model)
+	reasoningEffort, err := normalizeReasoningEffort(request.ReasoningEffort)
+	if err != nil {
+		return err
+	}
 	if request.RequestID == "" {
 		return errors.New("요청 ID가 없습니다")
 	}
@@ -403,7 +418,7 @@ func (a *App) StartChat(request ChatRequest) error {
 		return err
 	}
 
-	go a.runChat(ctx, request.RequestID, client, request.Model, messages, request.Benchmark)
+	go a.runChat(ctx, request.RequestID, client, request.Model, messages, reasoningEffort, request.Benchmark)
 	return nil
 }
 
@@ -423,6 +438,7 @@ func (a *App) runChat(
 	client *openai.Client,
 	model string,
 	messages []openai.Message,
+	reasoningEffort string,
 	benchmark bool,
 ) {
 	defer a.removeCancel(requestID)
@@ -437,7 +453,7 @@ func (a *App) runChat(
 	defer watchdog.stop()
 	a.emit(ChatEvent{RequestID: requestID, Type: "started"})
 
-	err := client.StreamChat(ctx, openai.ChatRequest{Model: model, Messages: messages}, func(chunk openai.StreamChunk) {
+	err := client.StreamChat(ctx, openai.ChatRequest{Model: model, Messages: messages, ReasoningEffort: reasoningEffort}, func(chunk openai.StreamChunk) {
 		if ctx.Err() != nil {
 			return
 		}

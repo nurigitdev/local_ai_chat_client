@@ -16,6 +16,13 @@ import type {
     SavedConnectionProfile,
     TokenUsage,
 } from '../bindings/github.com/taengson/agent-chat-desktop/models';
+import {
+    reasoningEffortFilenameTag,
+    reasoningEffortLabel,
+    reasoningEffortOptions,
+    reasoningEffortWarning,
+    type ReasoningEffort,
+} from './reasoningEffort';
 
 const chatEventName = 'chat:event';
 const openRouterProfileID = 'builtin-openrouter';
@@ -216,7 +223,7 @@ function formatBenchmarkDate(value: string): string {
 }
 
 function benchmarkRecordLabel(summary: ModelBenchmarkSummary): string {
-    return `${summary.model} · ${summary.profileName} · ${summary.suiteName} · ${formatBenchmarkDate(summary.updatedAt)}`;
+    return `${summary.model} · 추론 ${reasoningEffortLabel(summary.reasoningEffort)} · ${summary.profileName} · ${summary.suiteName} · ${formatBenchmarkDate(summary.updatedAt)}`;
 }
 
 function benchmarkStatusText(status: string): string {
@@ -299,13 +306,15 @@ function benchmarkExportFilename(kind: BenchmarkExportKind, format: BenchmarkExp
     );
     const model = joinedPart((record) => record.model, 'model');
     const suite = joinedPart((record) => record.suiteName, 'questionnaire');
+    const reasoningEfforts = [...new Set(records.map((record) => reasoningEffortFilenameTag(record.reasoningEffort)))];
+    const reasoning = reasoningEfforts.length === 1 ? reasoningEfforts[0] : 'r-mixed';
     if (kind === 'comparison' && records.length > 1) {
         const primaryModel = benchmarkExportFilenamePart(records[0].model, 'model');
         const otherModelCount = records.length - 1;
         const otherModels = `${otherModelCount}other${otherModelCount === 1 ? '' : 's'}`;
-        return `benchmark_${primaryModel}_vs_${otherModels}__${suite}.${benchmarkExportFormatInfo(format).extension}`;
+        return `benchmark_${primaryModel}_vs_${otherModels}__${reasoning}__${suite}.${benchmarkExportFormatInfo(format).extension}`;
     }
-    return `benchmark_${model}__${suite}.${benchmarkExportFormatInfo(format).extension}`;
+    return `benchmark_${model}__${reasoning}__${suite}.${benchmarkExportFormatInfo(format).extension}`;
 }
 
 function base64EncodeUTF8(value: string): string {
@@ -326,6 +335,7 @@ function benchmarkMetadataMarkdown(benchmark: ModelBenchmark): string[] {
     const summary = benchmarkSummary(benchmark);
     return [
         `- 모델: ${benchmark.model}`,
+        `- 추론 강도: ${reasoningEffortLabel(benchmark.reasoningEffort)}`,
         `- 연결 프로필: ${benchmark.profileName}`,
         `- 서버 주소: ${benchmark.profileBaseURL}`,
         `- 질문지: ${benchmark.suiteName}`,
@@ -377,6 +387,7 @@ function benchmarkHTMLReport(kind: BenchmarkExportKind, records: ModelBenchmark[
         const recordLabel = kind === 'comparison' ? `기록 ${String.fromCharCode(65 + recordIndex)}` : '선택한 기록';
         const metadata = [
             ['모델', benchmark.model],
+            ['추론 강도', reasoningEffortLabel(benchmark.reasoningEffort)],
             ['연결 프로필', benchmark.profileName],
             ['서버 주소', benchmark.profileBaseURL],
             ['질문지', benchmark.suiteName],
@@ -481,6 +492,7 @@ function benchmarkSummary(benchmark: ModelBenchmark): ModelBenchmarkSummary {
         imported: benchmark.imported,
         suiteName: benchmark.suiteName,
         model: benchmark.model,
+        reasoningEffort: benchmark.reasoningEffort,
         profileName: benchmark.profileName,
         profileBaseURL: benchmark.profileBaseURL,
         status: benchmark.status,
@@ -783,6 +795,7 @@ function ModelBenchmarkWorkspace({
     const [apiKey, setAPIKey] = useState('');
     const [models, setModels] = useState<Model[]>([]);
     const [selectedModel, setSelectedModel] = useState('');
+    const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('');
     const [openRouterModelPickerOpen, setOpenRouterModelPickerOpen] = useState(false);
     const [loadingModels, setLoadingModels] = useState(false);
     const [benchmark, setBenchmark] = useState<ModelBenchmark | null>(null);
@@ -832,6 +845,7 @@ function ModelBenchmarkWorkspace({
         [benchmarkProfiles, profileID],
     );
     const usingOpenRouter = isOpenRouterURL(selectedProfile?.baseURL || '');
+    const benchmarkReasoningWarning = reasoningEffortWarning(reasoningEffort);
 
     useEffect(() => {
         if (!usingOpenRouter || models.length === 0 || openRouterModelIDs.length === 0) return;
@@ -1042,6 +1056,7 @@ function ModelBenchmarkWorkspace({
                 profile,
                 model: saved.model,
                 messages: [{role: 'user', content: nextCase.prompt}],
+                reasoningEffort: saved.reasoningEffort,
                 benchmark: true,
             });
         } catch (reason) {
@@ -1211,6 +1226,7 @@ function ModelBenchmarkWorkspace({
             profileName: selectedProfile.name,
             profileBaseURL: selectedProfile.baseURL,
             model: selectedModel,
+            reasoningEffort,
             suiteName: selectedSuite.name,
             status: 'running',
             createdAt: '',
@@ -1439,6 +1455,7 @@ function ModelBenchmarkWorkspace({
                     <span>{benchmark.suiteName}</span>
                     <h2>{benchmark.model}</h2>
                     <div className="benchmark-run-identity">
+                        <div><span>추론 강도</span><strong>{reasoningEffortLabel(benchmark.reasoningEffort)}</strong></div>
                         <div><span>연결 프로필</span><strong>{benchmark.profileName}</strong></div>
                         <div><span>서버 주소</span><code title={benchmark.profileBaseURL}>{benchmark.profileBaseURL}</code></div>
                     </div>
@@ -1472,6 +1489,10 @@ function ModelBenchmarkWorkspace({
     const sameTestConfiguration = comparisonA && comparisonB
         ? hasSameTestConfiguration(comparisonA, comparisonB)
             && (!comparisonC || hasSameTestConfiguration(comparisonA, comparisonC))
+        : false;
+    const sameReasoningEffort = comparisonA && comparisonB
+        ? comparisonA.reasoningEffort === comparisonB.reasoningEffort
+            && (!comparisonC || comparisonA.reasoningEffort === comparisonC.reasoningEffort)
         : false;
     const sameServerProfile = comparisonA && comparisonB
         ? comparisonA.profileBaseURL === comparisonB.profileBaseURL
@@ -1552,6 +1573,23 @@ function ModelBenchmarkWorkspace({
                             </select>
                         )}
                     </label>
+                    <div className="benchmark-reasoning-field">
+                        <label htmlFor="benchmark-reasoning-effort">추론 강도</label>
+                        <small>모델·서버에 따라 지원하는 단계가 다를 수 있습니다.</small>
+                        <select
+                            id="benchmark-reasoning-effort"
+                            value={reasoningEffort}
+                            onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}
+                            disabled={isRunning}
+                        >
+                            {reasoningEffortOptions.map((option) => (
+                                <option key={option.value || 'auto'} value={option.value}>{option.label}</option>
+                            ))}
+                        </select>
+                        {benchmarkReasoningWarning && (
+                            <p className="benchmark-reasoning-warning" role="status">⚠ {benchmarkReasoningWarning}</p>
+                        )}
+                    </div>
                     <label>
                         질문지 프로필
                         <select value={suiteID} onChange={(event) => changeSuite(event.target.value)} disabled={isRunning}>
@@ -1624,7 +1662,7 @@ function ModelBenchmarkWorkspace({
                                 <div>
                                     <span>선택한 기록</span>
                                     <strong>{analysisRecord.model}</strong>
-                                    <small title={analysisRecord.profileBaseURL}>{analysisRecord.profileName} · {analysisRecord.profileBaseURL} · {formatBenchmarkDate(analysisRecord.updatedAt)}</small>
+                                    <small title={analysisRecord.profileBaseURL}>추론 {reasoningEffortLabel(analysisRecord.reasoningEffort)} · {analysisRecord.profileName} · {analysisRecord.profileBaseURL} · {formatBenchmarkDate(analysisRecord.updatedAt)}</small>
                                 </div>
                                 <div className="benchmark-record-actions">
                                     <button className="text-button" type="button" onClick={() => showStoredBenchmark(analysisRecord)} disabled={isRunning}>상세 결과 보기</button>
@@ -1698,7 +1736,7 @@ function ModelBenchmarkWorkspace({
                                 >
                                     <span>A</span>
                                     <strong>{comparisonA.model}</strong>
-                                    <small title={comparisonA.profileBaseURL}>{comparisonA.profileName} · {comparisonA.profileBaseURL} · {formatBenchmarkDate(comparisonA.updatedAt)}</small>
+                                    <small title={comparisonA.profileBaseURL}>추론 {reasoningEffortLabel(comparisonA.reasoningEffort)} · {comparisonA.profileName} · {comparisonA.profileBaseURL} · {formatBenchmarkDate(comparisonA.updatedAt)}</small>
                                     <em>상세 결과 보기</em>
                                 </button>
                                 <button
@@ -1710,7 +1748,7 @@ function ModelBenchmarkWorkspace({
                                 >
                                     <span>B</span>
                                     <strong>{comparisonB.model}</strong>
-                                    <small title={comparisonB.profileBaseURL}>{comparisonB.profileName} · {comparisonB.profileBaseURL} · {formatBenchmarkDate(comparisonB.updatedAt)}</small>
+                                    <small title={comparisonB.profileBaseURL}>추론 {reasoningEffortLabel(comparisonB.reasoningEffort)} · {comparisonB.profileName} · {comparisonB.profileBaseURL} · {formatBenchmarkDate(comparisonB.updatedAt)}</small>
                                     <em>상세 결과 보기</em>
                                 </button>
                                 {comparisonC && (
@@ -1723,14 +1761,16 @@ function ModelBenchmarkWorkspace({
                                     >
                                         <span>C</span>
                                         <strong>{comparisonC.model}</strong>
-                                        <small title={comparisonC.profileBaseURL}>{comparisonC.profileName} · {comparisonC.profileBaseURL} · {formatBenchmarkDate(comparisonC.updatedAt)}</small>
+                                        <small title={comparisonC.profileBaseURL}>추론 {reasoningEffortLabel(comparisonC.reasoningEffort)} · {comparisonC.profileName} · {comparisonC.profileBaseURL} · {formatBenchmarkDate(comparisonC.updatedAt)}</small>
                                         <em>상세 결과 보기</em>
                                     </button>
                                 )}
                             </div>
-                            <p className={`benchmark-comparison-notice ${sameTestConfiguration ? 'compatible' : 'warning'}`}>
+                            <p className={`benchmark-comparison-notice ${sameTestConfiguration && sameReasoningEffort ? 'compatible' : 'warning'}`}>
                                 {!sameTestConfiguration
                                     ? '선택한 기록의 테스트 제목 또는 질문이 다릅니다. 수치는 참고용으로 비교해 주세요.'
+                                    : !sameReasoningEffort
+                                        ? '선택한 기록의 추론 강도가 다릅니다. 추론 조건 차이를 고려해 수치를 비교해 주세요.'
                                     : sameServerProfile
                                         ? '같은 테스트 구성과 연결 프로필에서 실행된 직접 비교 가능한 기록입니다.'
                                         : '테스트 구성은 같지만 연결 프로필이 달라 서버 환경 차이가 포함될 수 있습니다.'}
