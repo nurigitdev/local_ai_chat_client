@@ -39,14 +39,34 @@ type BenchmarkSuite = {
     description: string;
     templates: BenchmarkCaseDraft[];
 };
-type BenchmarkHomeTab = 'run' | 'analysis' | 'comparison';
+type BenchmarkHomeTab = 'run' | 'analysis' | 'comparison' | 'practical';
 type BenchmarkMetric = 'totalDuration' | 'firstToken' | 'generationSpeed' | 'outputTokens';
 type BenchmarkChartScale = 'relative' | 'absolute';
-type BenchmarkExportKind = 'analysis' | 'comparison';
+type BenchmarkExportKind = 'analysis' | 'comparison' | 'practical';
 type BenchmarkExportFormat = 'html' | 'markdown';
+type PracticalBenchmarkSuite = 'document' | 'development';
+type PracticalComparisonLabel = 'A' | 'B' | 'C';
+
+type PracticalBenchmarkPair = {
+    document: ModelBenchmark;
+    development: ModelBenchmark;
+};
+
+type PracticalBenchmarkPairs = Record<PracticalComparisonLabel, PracticalBenchmarkPair | null>;
+
+type PracticalBenchmarkPairCandidate = {
+    id: string;
+    document: ModelBenchmarkSummary;
+    development: ModelBenchmarkSummary;
+};
 
 const benchmarkReportFormatVersion = 1;
 const benchmarkReportMarkerName = 'agent-chat-benchmark-report-v1';
+const practicalBenchmarkSuiteLabels: Record<PracticalBenchmarkSuite, string> = {
+    document: '문서·한국어 실무',
+    development: '개발·지시 이행',
+};
+const emptyPracticalBenchmarkPairs: PracticalBenchmarkPairs = {A: null, B: null, C: null};
 
 const developmentBenchmarkTemplates: BenchmarkCaseDraft[] = [
     {
@@ -226,6 +246,10 @@ function benchmarkRecordLabel(summary: ModelBenchmarkSummary): string {
     return `${summary.model} · 추론 ${reasoningEffortLabel(summary.reasoningEffort)} · ${summary.profileName} · ${summary.suiteName} · ${formatBenchmarkDate(summary.updatedAt)}`;
 }
 
+function benchmarkComparisonRecordLabel(summary: ModelBenchmarkSummary): string {
+    return `${summary.model} · 추론 ${reasoningEffortLabel(summary.reasoningEffort)} · ${summary.profileName} · ${formatBenchmarkDate(summary.updatedAt)}`;
+}
+
 function benchmarkStatusText(status: string): string {
     if (status === 'completed') return '완료';
     if (status === 'running') return '실행 중';
@@ -279,7 +303,9 @@ function benchmarkCaseMetricLines(benchmarkCase: ModelBenchmarkCase): string[] {
 }
 
 function benchmarkExportKindLabel(kind: BenchmarkExportKind): string {
-    return kind === 'analysis' ? '기록 분석' : '기록 비교';
+    if (kind === 'analysis') return '기록 분석';
+    if (kind === 'practical') return '실무·개발 비교';
+    return '기록 비교';
 }
 
 function benchmarkExportFormatInfo(format: BenchmarkExportFormat): {label: string; extension: string; filterName: string} {
@@ -308,6 +334,12 @@ function benchmarkExportFilename(kind: BenchmarkExportKind, format: BenchmarkExp
     const suite = joinedPart((record) => record.suiteName, 'questionnaire');
     const reasoningEfforts = [...new Set(records.map((record) => reasoningEffortFilenameTag(record.reasoningEffort)))];
     const reasoning = reasoningEfforts.length === 1 ? reasoningEfforts[0] : 'r-mixed';
+    if (kind === 'practical' && records.length >= 4) {
+        const primaryModel = benchmarkExportFilenamePart(records[0].model, 'model');
+        const otherModelCount = Math.max(1, Math.ceil(records.length / 2) - 1);
+        const otherModels = `${otherModelCount}other${otherModelCount === 1 ? '' : 's'}`;
+        return `benchmark_${primaryModel}_vs_${otherModels}__${reasoning}__문서-개발.${benchmarkExportFormatInfo(format).extension}`;
+    }
     if (kind === 'comparison' && records.length > 1) {
         const primaryModel = benchmarkExportFilenamePart(records[0].model, 'model');
         const otherModelCount = records.length - 1;
@@ -315,6 +347,16 @@ function benchmarkExportFilename(kind: BenchmarkExportKind, format: BenchmarkExp
         return `benchmark_${primaryModel}_vs_${otherModels}__${reasoning}__${suite}.${benchmarkExportFormatInfo(format).extension}`;
     }
     return `benchmark_${model}__${reasoning}__${suite}.${benchmarkExportFormatInfo(format).extension}`;
+}
+
+function benchmarkReportRecordLabel(kind: BenchmarkExportKind, recordIndex: number): string {
+    if (kind === 'analysis') return '선택한 기록';
+    if (kind === 'practical') {
+        const condition = String.fromCharCode(65 + Math.floor(recordIndex / 2));
+        const suite = recordIndex % 2 === 0 ? '문서·한국어 실무' : '개발·지시 이행';
+        return `${condition} 비교 조건 · ${suite}`;
+    }
+    return `기록 ${String.fromCharCode(65 + recordIndex)}`;
 }
 
 function base64EncodeUTF8(value: string): string {
@@ -358,7 +400,7 @@ function benchmarkMarkdownReport(kind: BenchmarkExportKind, records: ModelBenchm
     ];
 
     records.forEach((benchmark, recordIndex) => {
-        const recordLabel = kind === 'comparison' ? `기록 ${String.fromCharCode(65 + recordIndex)}` : '선택한 기록';
+        const recordLabel = benchmarkReportRecordLabel(kind, recordIndex);
         lines.push('', `## ${recordLabel} · ${benchmark.model}`, '', ...benchmarkMetadataMarkdown(benchmark));
         (benchmark.cases || []).forEach((benchmarkCase, caseIndex) => {
             lines.push(
@@ -384,7 +426,7 @@ function benchmarkHTMLReport(kind: BenchmarkExportKind, records: ModelBenchmark[
     const generatedAt = formatReportDate(new Date());
     const recordHTML = records.map((benchmark, recordIndex) => {
         const summary = benchmarkSummary(benchmark);
-        const recordLabel = kind === 'comparison' ? `기록 ${String.fromCharCode(65 + recordIndex)}` : '선택한 기록';
+        const recordLabel = benchmarkReportRecordLabel(kind, recordIndex);
         const metadata = [
             ['모델', benchmark.model],
             ['추론 강도', reasoningEffortLabel(benchmark.reasoningEffort)],
@@ -453,6 +495,38 @@ function hasSameTestConfiguration(left: ModelBenchmark, right: ModelBenchmark): 
             && benchmarkCase.title === other.title
             && benchmarkCase.prompt === other.prompt;
     });
+}
+
+function practicalBenchmarkSuite(suiteName: string): PracticalBenchmarkSuite | null {
+    const normalized = suiteName.replace(/[\s·/]+/g, '');
+    if (normalized.includes('문서한국어실무')) return 'document';
+    if (normalized.includes('개발지시이행')) return 'development';
+    return null;
+}
+
+function isPracticalBenchmarkPairComplete(pair: PracticalBenchmarkPair): boolean {
+    return practicalBenchmarkSuite(pair.document.suiteName) === 'document'
+        && practicalBenchmarkSuite(pair.development.suiteName) === 'development'
+        && (pair.document.cases || []).length === 4
+        && (pair.development.cases || []).length === 4;
+}
+
+function hasSameBenchmarkCondition(
+    left: Pick<ModelBenchmarkSummary, 'model' | 'profileBaseURL' | 'reasoningEffort'>,
+    right: Pick<ModelBenchmarkSummary, 'model' | 'profileBaseURL' | 'reasoningEffort'>,
+): boolean {
+    return left.model === right.model
+        && left.profileBaseURL === right.profileBaseURL
+        && left.reasoningEffort === right.reasoningEffort;
+}
+
+function hasSamePracticalTestConfiguration(left: PracticalBenchmarkPair, right: PracticalBenchmarkPair): boolean {
+    return hasSameTestConfiguration(left.document, right.document)
+        && hasSameTestConfiguration(left.development, right.development);
+}
+
+function practicalBenchmarkPairCandidateLabel(candidate: PracticalBenchmarkPairCandidate): string {
+    return `${candidate.document.model} · 추론 ${reasoningEffortLabel(candidate.document.reasoningEffort)} · ${candidate.document.profileName} · 문서 ${formatBenchmarkDate(candidate.document.updatedAt)} · 개발 ${formatBenchmarkDate(candidate.development.updatedAt)}`;
 }
 
 function suiteCaseDrafts(suite: BenchmarkSuite): BenchmarkCaseDraft[] {
@@ -746,6 +820,72 @@ function BenchmarkVerticalChart({
     );
 }
 
+function PracticalBenchmarkCaseChart({
+    suite,
+    primary,
+    secondary,
+    tertiary,
+    metric,
+    scale,
+}: {
+    suite: PracticalBenchmarkSuite;
+    primary: ModelBenchmarkCase;
+    secondary: ModelBenchmarkCase;
+    tertiary?: ModelBenchmarkCase;
+    metric: BenchmarkMetric;
+    scale: BenchmarkChartScale;
+}) {
+    const metricOption = benchmarkMetricOptions.find((option) => option.key === metric) || benchmarkMetricOptions[0];
+    const primaryValue = benchmarkMetricValue(primary, metric);
+    const secondaryValue = benchmarkMetricValue(secondary, metric);
+    const tertiaryValue = benchmarkMetricValue(tertiary, metric);
+    const values = [primaryValue, secondaryValue, tertiaryValue];
+    const maximumValue = Math.max(...values.filter((value): value is number => value !== undefined), 1);
+    const primaryChartValue = scale === 'relative' ? relativeBenchmarkValue(metric, primaryValue, values) : primaryValue;
+    const secondaryChartValue = scale === 'relative' ? relativeBenchmarkValue(metric, secondaryValue, values) : secondaryValue;
+    const tertiaryChartValue = scale === 'relative' ? relativeBenchmarkValue(metric, tertiaryValue, values) : tertiaryValue;
+    const chartMaximum = scale === 'relative' ? 100 : maximumValue;
+    const renderBar = (label: PracticalComparisonLabel, value: number | undefined, chartValue: number | undefined, tone: 'primary' | 'secondary' | 'tertiary') => (
+        <div className="benchmark-practical-case-column">
+            <span>{formatBenchmarkMetric(metric, value)}</span>
+            <div className="benchmark-practical-case-track">
+                {chartValue !== undefined && (
+                    <div
+                        className={`benchmark-practical-case-bar ${tone}`}
+                        style={{height: `${Math.max(3, chartValue / chartMaximum * 100)}%`}}
+                        title={`${label} · ${formatBenchmarkMetric(metric, value)}${scale === 'relative' ? ` · 상대 ${chartValue.toFixed(1)}%` : ''}`}
+                    />
+                )}
+            </div>
+            <small>{label}</small>
+        </div>
+    );
+
+    return (
+        <section className="benchmark-practical-case-chart" aria-label={`${practicalBenchmarkSuiteLabels[suite]} ${primary.title} ${metricOption.label} 비교 그래프`}>
+            <div className="benchmark-practical-case-heading">
+                <span>{practicalBenchmarkSuiteLabels[suite]}</span>
+                <strong>{primary.category}</strong>
+                <small title={primary.title}>{primary.title}</small>
+            </div>
+            <div className={`benchmark-practical-case-bars${tertiary ? ' three-series' : ''}`}>
+                {renderBar('A', primaryValue, primaryChartValue, 'primary')}
+                {renderBar('B', secondaryValue, secondaryChartValue, 'secondary')}
+                {tertiary && renderBar('C', tertiaryValue, tertiaryChartValue, 'tertiary')}
+            </div>
+            <p>{scale === 'relative' ? relativeComparisonSummary(metric, [
+                {label: 'A', value: primaryValue},
+                {label: 'B', value: secondaryValue},
+                ...(tertiary ? [{label: 'C', value: tertiaryValue}] : []),
+            ]) : comparisonSummary(metric, [
+                {label: 'A', value: primaryValue},
+                {label: 'B', value: secondaryValue},
+                ...(tertiary ? [{label: 'C', value: tertiaryValue}] : []),
+            ])}</p>
+        </section>
+    );
+}
+
 function BenchmarkExportActions({
     kind,
     exportingFormat,
@@ -809,6 +949,7 @@ function ModelBenchmarkWorkspace({
     const [analysisRecord, setAnalysisRecord] = useState<ModelBenchmark | null>(null);
     const [analysisMetric, setAnalysisMetric] = useState<BenchmarkMetric>('totalDuration');
     const [analysisScale, setAnalysisScale] = useState<BenchmarkChartScale>('absolute');
+    const [comparisonSuite, setComparisonSuite] = useState<PracticalBenchmarkSuite>('document');
     const [comparisonAID, setComparisonAID] = useState('');
     const [comparisonBID, setComparisonBID] = useState('');
     const [comparisonCID, setComparisonCID] = useState('');
@@ -817,8 +958,15 @@ function ModelBenchmarkWorkspace({
     const [comparisonC, setComparisonC] = useState<ModelBenchmark | null>(null);
     const [comparisonMetric, setComparisonMetric] = useState<BenchmarkMetric>('totalDuration');
     const [comparisonScale, setComparisonScale] = useState<BenchmarkChartScale>('relative');
+    const [practicalAID, setPracticalAID] = useState('');
+    const [practicalBID, setPracticalBID] = useState('');
+    const [practicalCID, setPracticalCID] = useState('');
+    const [practicalPairs, setPracticalPairs] = useState<PracticalBenchmarkPairs>(emptyPracticalBenchmarkPairs);
+    const [practicalMetric, setPracticalMetric] = useState<BenchmarkMetric>('totalDuration');
+    const [practicalScale, setPracticalScale] = useState<BenchmarkChartScale>('relative');
     const [loadingAnalysis, setLoadingAnalysis] = useState(false);
     const [loadingComparison, setLoadingComparison] = useState(false);
+    const [loadingPractical, setLoadingPractical] = useState(false);
     const [isRunning, setIsRunning] = useState(false);
     const [cancelling, setCancelling] = useState(false);
     const [error, setError] = useState('');
@@ -859,6 +1007,30 @@ function ModelBenchmarkWorkspace({
         () => history.filter((item) => item.status === 'completed' && item.caseCount > 0),
         [history],
     );
+    const practicalDocumentHistory = useMemo(
+        () => completedHistory.filter((item) => practicalBenchmarkSuite(item.suiteName) === 'document'),
+        [completedHistory],
+    );
+    const practicalDevelopmentHistory = useMemo(
+        () => completedHistory.filter((item) => practicalBenchmarkSuite(item.suiteName) === 'development'),
+        [completedHistory],
+    );
+    const comparisonHistory = useMemo(
+        () => completedHistory.filter((item) => practicalBenchmarkSuite(item.suiteName) === comparisonSuite),
+        [comparisonSuite, completedHistory],
+    );
+    const practicalPairCandidates = useMemo(() => practicalDocumentHistory.flatMap((document) => (
+        practicalDevelopmentHistory
+            .filter((development) => hasSameBenchmarkCondition(document, development))
+            .map((development) => ({
+                id: `${document.id}:${development.id}`,
+                document,
+                development,
+            }))
+    )).sort((left, right) => (
+        Math.max(Date.parse(right.document.updatedAt), Date.parse(right.development.updatedAt))
+        - Math.max(Date.parse(left.document.updatedAt), Date.parse(left.development.updatedAt))
+    )), [practicalDocumentHistory, practicalDevelopmentHistory]);
 
     function replaceBenchmark(nextBenchmark: ModelBenchmark | null) {
         benchmarkRef.current = nextBenchmark;
@@ -905,7 +1077,10 @@ function ModelBenchmarkWorkspace({
         if (!availableIDs.includes(analysisID)) {
             setAnalysisID(availableIDs[0] || '');
         }
+    }, [analysisID, completedHistory]);
 
+    useEffect(() => {
+        const availableIDs = comparisonHistory.map((item) => item.id);
         const nextAID = availableIDs.includes(comparisonAID) ? comparisonAID : availableIDs[0] || '';
         const nextBID = availableIDs.includes(comparisonBID) && comparisonBID !== nextAID
             ? comparisonBID
@@ -916,7 +1091,22 @@ function ModelBenchmarkWorkspace({
         if (nextAID !== comparisonAID) setComparisonAID(nextAID);
         if (nextBID !== comparisonBID) setComparisonBID(nextBID);
         if (nextCID !== comparisonCID) setComparisonCID(nextCID);
-    }, [analysisID, comparisonAID, comparisonBID, comparisonCID, completedHistory]);
+    }, [comparisonAID, comparisonBID, comparisonCID, comparisonHistory]);
+
+    useEffect(() => {
+        const candidateIDs = practicalPairCandidates.map((candidate) => candidate.id);
+        const firstAvailable = (excluded: string[]) => candidateIDs.find((id) => !excluded.includes(id)) || '';
+        const nextAID = candidateIDs.includes(practicalAID) ? practicalAID : firstAvailable([]);
+        const nextBID = candidateIDs.includes(practicalBID) && practicalBID !== nextAID
+            ? practicalBID
+            : firstAvailable([nextAID]);
+        const nextCID = candidateIDs.includes(practicalCID) && practicalCID !== nextAID && practicalCID !== nextBID
+            ? practicalCID
+            : '';
+        if (nextAID !== practicalAID) setPracticalAID(nextAID);
+        if (nextBID !== practicalBID) setPracticalBID(nextBID);
+        if (nextCID !== practicalCID) setPracticalCID(nextCID);
+    }, [practicalAID, practicalBID, practicalCID, practicalPairCandidates]);
 
     useEffect(() => {
         if (loadingHistory || isRunning || !benchmark || history.some((item) => item.id === benchmark.id)) return;
@@ -974,6 +1164,45 @@ function ModelBenchmarkWorkspace({
             active = false;
         };
     }, [comparisonAID, comparisonBID, comparisonCID]);
+
+    useEffect(() => {
+        if (!practicalAID || !practicalBID) {
+            setPracticalPairs(emptyPracticalBenchmarkPairs);
+            setLoadingPractical(false);
+            return;
+        }
+        const candidatesByID = new Map(practicalPairCandidates.map((candidate) => [candidate.id, candidate]));
+        const selectedCandidates = [practicalAID, practicalBID, practicalCID]
+            .map((id) => candidatesByID.get(id))
+            .filter((candidate): candidate is PracticalBenchmarkPairCandidate => candidate !== undefined);
+        if (selectedCandidates.length < 2) {
+            setPracticalPairs(emptyPracticalBenchmarkPairs);
+            setLoadingPractical(false);
+            return;
+        }
+        const ids = [...new Set(selectedCandidates.flatMap((candidate) => [candidate.document.id, candidate.development.id]))];
+        let active = true;
+        setLoadingPractical(true);
+        void Promise.all(ids.map((id) => ChatService.OpenModelBenchmark(id))).then((records) => {
+            if (!active) return;
+            const recordsByID = new Map(records.map((record) => [record.id, record]));
+            const pairFor = (id: string): PracticalBenchmarkPair | null => {
+                const candidate = candidatesByID.get(id);
+                if (!candidate) return null;
+                const document = recordsByID.get(candidate.document.id);
+                const development = recordsByID.get(candidate.development.id);
+                return document && development ? {document, development} : null;
+            };
+            setPracticalPairs({A: pairFor(practicalAID), B: pairFor(practicalBID), C: pairFor(practicalCID)});
+        }).catch((reason) => {
+            if (active) setError(String(reason));
+        }).finally(() => {
+            if (active) setLoadingPractical(false);
+        });
+        return () => {
+            active = false;
+        };
+    }, [practicalAID, practicalBID, practicalCID, practicalPairCandidates]);
 
     useEffect(() => {
         onBusyChange(isRunning);
@@ -1485,7 +1714,9 @@ function ModelBenchmarkWorkspace({
         ? '하나의 모델을 자세히 측정하세요'
         : homeTab === 'analysis'
             ? '벤치마크 결과를 시각적으로 분석하세요'
-            : '벤치마크 기록을 최대 세 개까지 비교하세요';
+            : homeTab === 'comparison'
+                ? '벤치마크 기록을 최대 세 개까지 비교하세요'
+                : '문서와 개발 결과를 문항별로 비교하세요';
     const sameTestConfiguration = comparisonA && comparisonB
         ? hasSameTestConfiguration(comparisonA, comparisonB)
             && (!comparisonC || hasSameTestConfiguration(comparisonA, comparisonC))
@@ -1498,6 +1729,41 @@ function ModelBenchmarkWorkspace({
         ? comparisonA.profileBaseURL === comparisonB.profileBaseURL
             && (!comparisonC || comparisonA.profileBaseURL === comparisonC.profileBaseURL)
         : false;
+    const practicalA = practicalPairs.A;
+    const practicalB = practicalPairs.B;
+    const practicalC = practicalPairs.C;
+    const hasCompletePracticalPairs = practicalA && practicalB
+        ? isPracticalBenchmarkPairComplete(practicalA) && isPracticalBenchmarkPairComplete(practicalB)
+            && (!practicalC || isPracticalBenchmarkPairComplete(practicalC))
+        : false;
+    const samePracticalTestConfiguration = practicalA && practicalB
+        ? hasSamePracticalTestConfiguration(practicalA, practicalB)
+            && (!practicalC || hasSamePracticalTestConfiguration(practicalA, practicalC))
+        : false;
+    const samePracticalReasoningEffort = practicalA && practicalB
+        ? practicalA.document.reasoningEffort === practicalB.document.reasoningEffort
+            && (!practicalC || practicalA.document.reasoningEffort === practicalC.document.reasoningEffort)
+        : false;
+    const samePracticalServerProfile = practicalA && practicalB
+        ? practicalA.document.profileBaseURL === practicalB.document.profileBaseURL
+            && (!practicalC || practicalA.document.profileBaseURL === practicalC.document.profileBaseURL)
+        : false;
+    const practicalExportRecords = [practicalA, practicalB, practicalC].flatMap((pair) => (
+        pair ? [pair.document, pair.development] : []
+    ));
+    const practicalCaseCharts = practicalA && practicalB && hasCompletePracticalPairs
+        ? (['document', 'development'] as PracticalBenchmarkSuite[]).flatMap((suite) => {
+            const primaryCases = practicalA[suite].cases || [];
+            const secondaryCases = practicalB[suite].cases || [];
+            const tertiaryCases = practicalC?.[suite].cases || [];
+            return primaryCases.map((primaryCase, index) => ({
+                suite,
+                primary: primaryCase,
+                secondary: secondaryCases[index],
+                tertiary: practicalC ? tertiaryCases[index] : undefined,
+            }));
+        })
+        : [];
 
     return (
         <section className="benchmark-page benchmark-setup" aria-label="모델 벤치마크 설정">
@@ -1528,6 +1794,7 @@ function ModelBenchmarkWorkspace({
                 <button className={homeTab === 'run' ? 'active' : ''} type="button" onClick={() => setHomeTab('run')}>벤치마크 실행</button>
                 <button className={homeTab === 'analysis' ? 'active' : ''} type="button" onClick={() => setHomeTab('analysis')}>기록 분석</button>
                 <button className={homeTab === 'comparison' ? 'active' : ''} type="button" onClick={() => setHomeTab('comparison')}>기록 비교</button>
+                <button className={homeTab === 'practical' ? 'active' : ''} type="button" onClick={() => setHomeTab('practical')}>실무·개발 비교</button>
             </nav>
             {homeTab === 'run' && (
                 <div className="benchmark-setup-grid">
@@ -1692,30 +1959,49 @@ function ModelBenchmarkWorkspace({
             {homeTab === 'comparison' && (
                 <section className="benchmark-visualization-panel" aria-label="벤치마크 기록 비교">
                     <div className="benchmark-comparison-selectors">
+                        <div className="benchmark-comparison-suite-filter">
+                            <div>
+                                <strong>비교할 벤치마크</strong>
+                                <small>선택한 질문지의 기록만 아래 모델 선택에 표시합니다.</small>
+                            </div>
+                            <div className="benchmark-comparison-suite-switch" role="group" aria-label="비교할 벤치마크 선택">
+                                {(['document', 'development'] as PracticalBenchmarkSuite[]).map((suite) => (
+                                    <button
+                                        className={comparisonSuite === suite ? 'active' : ''}
+                                        key={suite}
+                                        type="button"
+                                        onClick={() => setComparisonSuite(suite)}
+                                        disabled={isRunning}
+                                    >
+                                        {practicalBenchmarkSuiteLabels[suite]}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
                         <label>
                             A 기록
-                            <select value={comparisonAID} onChange={(event) => setComparisonAID(event.target.value)} disabled={loadingHistory || completedHistory.length < 2}>
-                                {completedHistory.length < 2 && <option value="">비교할 기록이 부족합니다</option>}
-                                {completedHistory.map((item) => (
-                                    <option key={item.id} value={item.id} disabled={item.id === comparisonBID || item.id === comparisonCID}>{benchmarkRecordLabel(item)}</option>
+                            <select value={comparisonAID} onChange={(event) => setComparisonAID(event.target.value)} disabled={loadingHistory || comparisonHistory.length < 2}>
+                                {comparisonHistory.length < 2 && <option value="">비교할 기록이 부족합니다</option>}
+                                {comparisonHistory.map((item) => (
+                                    <option key={item.id} value={item.id} disabled={item.id === comparisonBID || item.id === comparisonCID}>{benchmarkComparisonRecordLabel(item)}</option>
                                 ))}
                             </select>
                         </label>
                         <label>
                             B 기록
-                            <select value={comparisonBID} onChange={(event) => setComparisonBID(event.target.value)} disabled={loadingHistory || completedHistory.length < 2}>
-                                {completedHistory.length < 2 && <option value="">비교할 기록이 부족합니다</option>}
-                                {completedHistory.map((item) => (
-                                    <option key={item.id} value={item.id} disabled={item.id === comparisonAID || item.id === comparisonCID}>{benchmarkRecordLabel(item)}</option>
+                            <select value={comparisonBID} onChange={(event) => setComparisonBID(event.target.value)} disabled={loadingHistory || comparisonHistory.length < 2}>
+                                {comparisonHistory.length < 2 && <option value="">비교할 기록이 부족합니다</option>}
+                                {comparisonHistory.map((item) => (
+                                    <option key={item.id} value={item.id} disabled={item.id === comparisonAID || item.id === comparisonCID}>{benchmarkComparisonRecordLabel(item)}</option>
                                 ))}
                             </select>
                         </label>
                         <label>
                             C 기록
-                            <select value={comparisonCID} onChange={(event) => setComparisonCID(event.target.value)} disabled={loadingHistory || completedHistory.length < 3}>
+                            <select value={comparisonCID} onChange={(event) => setComparisonCID(event.target.value)} disabled={loadingHistory || comparisonHistory.length < 3}>
                                 <option value="">선택 안 함</option>
-                                {completedHistory.map((item) => (
-                                    <option key={item.id} value={item.id} disabled={item.id === comparisonAID || item.id === comparisonBID}>{benchmarkRecordLabel(item)}</option>
+                                {comparisonHistory.map((item) => (
+                                    <option key={item.id} value={item.id} disabled={item.id === comparisonAID || item.id === comparisonBID}>{benchmarkComparisonRecordLabel(item)}</option>
                                 ))}
                             </select>
                         </label>
@@ -1723,7 +2009,7 @@ function ModelBenchmarkWorkspace({
                     {loadingHistory || loadingComparison ? (
                         <div className="benchmark-visualization-empty">비교할 기록을 불러오는 중…</div>
                     ) : !comparisonA || !comparisonB ? (
-                        <div className="benchmark-visualization-empty">완료된 벤치마크 기록이 2개 이상 필요합니다.</div>
+                        <div className="benchmark-visualization-empty">완료된 {practicalBenchmarkSuiteLabels[comparisonSuite]} 기록이 2개 이상 필요합니다.</div>
                     ) : (
                         <>
                             <div className={`benchmark-comparison-records${comparisonC ? ' has-tertiary' : ''}`}>
@@ -1793,6 +2079,127 @@ function ModelBenchmarkWorkspace({
                                 scale={comparisonScale}
                                 onScaleChange={setComparisonScale}
                             />
+                        </>
+                    )}
+                </section>
+            )}
+            {homeTab === 'practical' && (
+                <section className="benchmark-visualization-panel" aria-label="실무와 개발 벤치마크 비교">
+                    <section className="benchmark-practical-intro">
+                        <div>
+                            <strong>문서·한국어 실무 4문항과 개발·지시 이행 4문항을 함께 비교합니다.</strong>
+                            <small>같은 모델·서버·추론 강도의 문서·개발 기록을 하나의 비교 조건으로 자동 묶습니다.</small>
+                        </div>
+                    </section>
+                    <div className="benchmark-practical-selectors">
+                        {(['A', 'B', 'C'] as PracticalComparisonLabel[]).map((label) => {
+                            const selectedID = label === 'A' ? practicalAID : label === 'B' ? practicalBID : practicalCID;
+                            const usedIDs = [practicalAID, practicalBID, practicalCID].filter((id) => id && id !== selectedID);
+                            const setSelectedID = label === 'A' ? setPracticalAID : label === 'B' ? setPracticalBID : setPracticalCID;
+                            return (
+                                <section className={`benchmark-practical-selector ${label === 'A' ? 'primary' : label === 'B' ? 'secondary' : 'tertiary'}`} key={label}>
+                                    <div className="benchmark-practical-selector-heading">
+                                        <span>{label}</span>
+                                        <div>
+                                            <strong>{label} 비교 조건</strong>
+                                            <small>{label === 'C' ? '선택 안 함 가능' : '문서·개발 결과가 함께 있는 조건'}</small>
+                                        </div>
+                                    </div>
+                                    <label>
+                                        비교할 실행 조건
+                                        <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)} disabled={loadingHistory || isRunning || practicalPairCandidates.length === 0}>
+                                            {label === 'C' && <option value="">선택 안 함</option>}
+                                            {practicalPairCandidates.length === 0 && <option value="">짝지을 수 있는 기록이 없습니다</option>}
+                                            {practicalPairCandidates.map((candidate) => (
+                                                <option key={candidate.id} value={candidate.id} disabled={usedIDs.includes(candidate.id)}>{practicalBenchmarkPairCandidateLabel(candidate)}</option>
+                                            ))}
+                                        </select>
+                                    </label>
+                                </section>
+                            );
+                        })}
+                    </div>
+                    {loadingHistory || loadingPractical ? (
+                        <div className="benchmark-visualization-empty">비교할 문서·개발 기록을 불러오는 중…</div>
+                    ) : !practicalA || !practicalB ? (
+                        <div className="benchmark-visualization-empty">같은 모델·서버·추론 강도로 실행한 문서·한국어 실무와 개발·지시 이행 기록 쌍이 두 개 이상 필요합니다.</div>
+                    ) : !hasCompletePracticalPairs ? (
+                        <div className="benchmark-visualization-empty">각 조건에는 문서·한국어 실무 4문항과 개발·지시 이행 4문항이 모두 있는 기록을 선택해 주세요.</div>
+                    ) : (
+                        <>
+                            <div className={`benchmark-practical-conditions${practicalC ? ' has-tertiary' : ''}`}>
+                                {(['A', 'B', 'C'] as PracticalComparisonLabel[]).map((label) => {
+                                    const pair = practicalPairs[label];
+                                    if (!pair) return null;
+                                    return (
+                                        <section className={`benchmark-practical-condition ${label === 'A' ? 'primary' : label === 'B' ? 'secondary' : 'tertiary'}`} key={label}>
+                                            <span>{label} 비교 조건</span>
+                                            <strong>{pair.document.model}</strong>
+                                            <small title={pair.document.profileBaseURL}>추론 {reasoningEffortLabel(pair.document.reasoningEffort)} · {pair.document.profileName} · {pair.document.profileBaseURL}</small>
+                                            <em>문서 {formatBenchmarkDate(pair.document.updatedAt)} · 개발 {formatBenchmarkDate(pair.development.updatedAt)}</em>
+                                        </section>
+                                    );
+                                })}
+                            </div>
+                            <p className={`benchmark-comparison-notice ${samePracticalTestConfiguration && samePracticalReasoningEffort ? 'compatible' : 'warning'}`}>
+                                {!samePracticalTestConfiguration
+                                    ? '선택한 조건의 테스트 제목 또는 질문이 다릅니다. 그래프는 참고용으로 비교해 주세요.'
+                                    : !samePracticalReasoningEffort
+                                        ? '비교 조건의 추론 강도가 다릅니다. 추론 조건 차이를 고려해 그래프를 비교해 주세요.'
+                                        : samePracticalServerProfile
+                                            ? '두 질문지의 같은 테스트 구성과 실행 조건을 문항별로 직접 비교합니다.'
+                                            : '테스트 구성과 추론 강도는 같지만 연결 프로필이 달라 서버 환경 차이가 포함될 수 있습니다.'}
+                            </p>
+                            <BenchmarkExportActions
+                                kind="practical"
+                                exportingFormat={exportingFormat}
+                                exportMessage={exportMessage}
+                                disabled={isRunning}
+                                onExport={(format) => { void exportBenchmarkReport('practical', format, practicalExportRecords); }}
+                            />
+                            <section className="benchmark-practical-chart-controls" aria-label="실무와 개발 비교 그래프 설정">
+                                <div>
+                                    <strong>문항별 그래프 8개</strong>
+                                    <small>{practicalScale === 'relative' ? relativeScaleDescription(practicalMetric) : (benchmarkMetricOptions.find((option) => option.key === practicalMetric) || benchmarkMetricOptions[0]).direction}</small>
+                                </div>
+                                <div className="benchmark-chart-controls">
+                                    <div className="benchmark-scale-switch" role="group" aria-label="그래프 눈금">
+                                        <button className={practicalScale === 'relative' ? 'active' : ''} type="button" onClick={() => setPracticalScale('relative')}>상대 비교</button>
+                                        <button className={practicalScale === 'absolute' ? 'active' : ''} type="button" onClick={() => setPracticalScale('absolute')}>실측값</button>
+                                    </div>
+                                    <div className="benchmark-metric-switch" role="group" aria-label="그래프 지표">
+                                        {benchmarkMetricOptions.map((option) => (
+                                            <button className={practicalMetric === option.key ? 'active' : ''} key={option.key} type="button" onClick={() => setPracticalMetric(option.key)}>{option.label}</button>
+                                        ))}
+                                    </div>
+                                </div>
+                            </section>
+                            <div className="benchmark-practical-chart-rows">
+                                {(['document', 'development'] as PracticalBenchmarkSuite[]).map((suite) => {
+                                    const suiteCharts = practicalCaseCharts.filter((chart) => chart.suite === suite);
+                                    return (
+                                        <section className="benchmark-practical-chart-row" key={suite}>
+                                            <div className="benchmark-practical-chart-row-heading">
+                                                <strong>{practicalBenchmarkSuiteLabels[suite]}</strong>
+                                                <small>4문항</small>
+                                            </div>
+                                            <div className="benchmark-practical-chart-row-grid">
+                                                {suiteCharts.map((chart, index) => chart.secondary && (
+                                                    <PracticalBenchmarkCaseChart
+                                                        key={`${chart.suite}-${index}-${chart.primary.id}`}
+                                                        suite={chart.suite}
+                                                        primary={chart.primary}
+                                                        secondary={chart.secondary}
+                                                        tertiary={chart.tertiary}
+                                                        metric={practicalMetric}
+                                                        scale={practicalScale}
+                                                    />
+                                                ))}
+                                            </div>
+                                        </section>
+                                    );
+                                })}
+                            </div>
                         </>
                     )}
                 </section>

@@ -75,6 +75,13 @@ interface ModelTokenUsage {
     totalTokens: number;
 }
 
+type BenchmarkHistorySection = 'recent' | 'imported';
+
+interface BenchmarkHistorySectionOpenState {
+    recent: boolean;
+    imported: boolean;
+}
+
 const defaultBaseURL = 'http://localhost:8000';
 const openRouterProfile: ConnectionProfileOption = {
     id: 'builtin-openrouter',
@@ -96,6 +103,7 @@ const maxAttachmentFileSize = 5 * 1024 * 1024;
 const maxAttachmentTotalFileSize = 12 * 1024 * 1024;
 const maxAttachmentContentSize = 240 * 1024;
 const maxAttachmentTotalContentSize = 512 * 1024;
+const benchmarkHistorySectionStateStorageKey = 'agent-chat.benchmark-history-section-open';
 const emptyBenchmarkSidebar: ModelBenchmarkSidebarState = {
     model: '',
     profileName: '',
@@ -107,6 +115,22 @@ const emptyBenchmarkSidebar: ModelBenchmarkSidebarState = {
     imported: [],
     isHistoryLoading: false,
 };
+
+function loadBenchmarkHistorySectionOpenState(): BenchmarkHistorySectionOpenState {
+    const fallback = {recent: true, imported: true};
+    if (typeof window === 'undefined') return fallback;
+    try {
+        const stored = window.localStorage.getItem(benchmarkHistorySectionStateStorageKey);
+        if (!stored) return fallback;
+        const parsed = JSON.parse(stored) as Partial<BenchmarkHistorySectionOpenState>;
+        return {
+            recent: typeof parsed.recent === 'boolean' ? parsed.recent : fallback.recent,
+            imported: typeof parsed.imported === 'boolean' ? parsed.imported : fallback.imported,
+        };
+    } catch {
+        return fallback;
+    }
+}
 
 function makeID(): string {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -564,6 +588,7 @@ function App() {
     const [sidebarVisible, setSidebarVisible] = useState(true);
     const [benchmarkBusy, setBenchmarkBusy] = useState(false);
     const [benchmarkSidebar, setBenchmarkSidebar] = useState<ModelBenchmarkSidebarState>(emptyBenchmarkSidebar);
+    const [benchmarkHistorySectionOpen, setBenchmarkHistorySectionOpen] = useState<BenchmarkHistorySectionOpenState>(loadBenchmarkHistorySectionOpenState);
     const [benchmarkOpenRequestID, setBenchmarkOpenRequestID] = useState<string | null>(null);
     const [benchmarkHistoryRefreshKey, setBenchmarkHistoryRefreshKey] = useState(0);
     const [benchmarkToDelete, setBenchmarkToDelete] = useState<ModelBenchmarkSummary | null>(null);
@@ -658,6 +683,14 @@ function App() {
         previousSelectedModelRef.current = selectedModel;
     }, [selectedModel]);
 
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(benchmarkHistorySectionStateStorageKey, JSON.stringify(benchmarkHistorySectionOpen));
+        } catch {
+            // The sidebar remains usable when local storage is unavailable.
+        }
+    }, [benchmarkHistorySectionOpen]);
+
     const handleBenchmarkBusyChange = useCallback((nextBusy: boolean) => {
         setBenchmarkBusy(nextBusy);
     }, []);
@@ -669,6 +702,10 @@ function App() {
     const handleBenchmarkOpenRequestHandled = useCallback(() => {
         setBenchmarkOpenRequestID(null);
     }, []);
+
+    function toggleBenchmarkHistorySection(section: BenchmarkHistorySection) {
+        setBenchmarkHistorySectionOpen((current) => ({...current, [section]: !current[section]}));
+    }
 
     function requestBenchmarkDelete(summary: ModelBenchmarkSummary) {
         if (benchmarkBusy) return;
@@ -1761,9 +1798,19 @@ function App() {
                             <p>저장된 프로필에서 모델 하나를 선택해 편집 가능한 4개 테스트를 순차 실행합니다.</p>
                         )}
                         <div className="benchmark-sidebar-history-groups">
-                            <section className="benchmark-sidebar-history" aria-label="내 벤치마크">
-                                <span>내 벤치마크</span>
-                                <div className="benchmark-sidebar-history-list">
+                            <section className={`benchmark-sidebar-history ${benchmarkHistorySectionOpen.recent ? 'expanded' : 'collapsed'}`} aria-label="내 벤치마크">
+                                <button
+                                    className="benchmark-sidebar-history-toggle"
+                                    type="button"
+                                    aria-expanded={benchmarkHistorySectionOpen.recent}
+                                    aria-controls="benchmark-sidebar-recent-list"
+                                    onClick={() => toggleBenchmarkHistorySection('recent')}
+                                >
+                                    <span aria-hidden="true">{benchmarkHistorySectionOpen.recent ? '⌄' : '›'}</span>
+                                    <strong>내 벤치마크</strong>
+                                    <small>{benchmarkSidebar.recent.length}</small>
+                                </button>
+                                {benchmarkHistorySectionOpen.recent && <div className="benchmark-sidebar-history-list" id="benchmark-sidebar-recent-list">
                                     {benchmarkSidebar.isHistoryLoading && <small>기록을 불러오는 중…</small>}
                                     {!benchmarkSidebar.isHistoryLoading && benchmarkSidebar.recent.length === 0 && <small>아직 실행한 벤치마크가 없습니다.</small>}
                                     {benchmarkSidebar.recent.map((item) => (
@@ -1780,11 +1827,21 @@ function App() {
                                             <small>{item.suiteName} · {item.completedCaseCount}/{item.caseCount}개 · {formatUpdatedAt(item.updatedAt)}</small>
                                         </button>
                                     ))}
-                                </div>
+                                </div>}
                             </section>
-                            <section className="benchmark-sidebar-history imported" aria-label="가져온 벤치마크">
-                                <span>가져온 벤치마크</span>
-                                <div className="benchmark-sidebar-history-list">
+                            <section className={`benchmark-sidebar-history imported ${benchmarkHistorySectionOpen.imported ? 'expanded' : 'collapsed'}`} aria-label="가져온 벤치마크">
+                                <button
+                                    className="benchmark-sidebar-history-toggle"
+                                    type="button"
+                                    aria-expanded={benchmarkHistorySectionOpen.imported}
+                                    aria-controls="benchmark-sidebar-imported-list"
+                                    onClick={() => toggleBenchmarkHistorySection('imported')}
+                                >
+                                    <span aria-hidden="true">{benchmarkHistorySectionOpen.imported ? '⌄' : '›'}</span>
+                                    <strong>가져온 벤치마크</strong>
+                                    <small>{benchmarkSidebar.imported.length}</small>
+                                </button>
+                                {benchmarkHistorySectionOpen.imported && <div className="benchmark-sidebar-history-list" id="benchmark-sidebar-imported-list">
                                     {benchmarkSidebar.isHistoryLoading && <small>기록을 불러오는 중…</small>}
                                     {!benchmarkSidebar.isHistoryLoading && benchmarkSidebar.imported.length === 0 && <small>가져온 벤치마크가 없습니다.</small>}
                                     {benchmarkSidebar.imported.map((item) => (
@@ -1801,7 +1858,7 @@ function App() {
                                             <small>{item.suiteName} · {item.completedCaseCount}/{item.caseCount}개 · {formatUpdatedAt(item.updatedAt)}</small>
                                         </button>
                                     ))}
-                                </div>
+                                </div>}
                             </section>
                         </div>
                         <small>연결 프로필 {savedConnectionProfiles.length}개 · 기본 1개 포함</small>
