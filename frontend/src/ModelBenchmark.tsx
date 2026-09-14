@@ -1221,9 +1221,9 @@ function ModelBenchmarkWorkspace({
             status: isRunning ? 'running' : 'idle',
             completedCaseCount: isRunning ? summary?.completedCaseCount || 0 : 0,
             caseCount: isRunning ? summary?.caseCount || 0 : 0,
-            recent: history.filter((item) => item.source === 'local' || (!item.source && !item.imported)).slice(0, 8),
-            imported: history.filter((item) => item.source === 'report' || (!item.source && item.imported)).slice(0, 8),
-            synchronized: history.filter((item) => item.source === 'sync').slice(0, 8),
+            recent: history.filter((item) => item.source === 'local' || (!item.source && !item.imported)),
+            imported: history.filter((item) => item.source === 'report' || (!item.source && item.imported)),
+            synchronized: history.filter((item) => item.source === 'sync'),
             isHistoryLoading: loadingHistory,
         });
     }, [benchmark, history, isRunning, loadingHistory, onSidebarChange]);

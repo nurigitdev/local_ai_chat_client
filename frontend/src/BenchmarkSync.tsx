@@ -1,9 +1,31 @@
 import {FormEvent, useCallback, useEffect, useState} from 'react';
 import {App as ChatService} from '../bindings/github.com/taengson/agent-chat-desktop';
-import type {BenchmarkSyncLog, BenchmarkSyncPeer, BenchmarkSyncState} from '../bindings/github.com/taengson/agent-chat-desktop/models';
+import type {BenchmarkSyncLog, BenchmarkSyncPairRequest, BenchmarkSyncPeer, BenchmarkSyncState} from '../bindings/github.com/taengson/agent-chat-desktop/models';
 
 interface BenchmarkSyncProps {
     onBenchmarkHistoryChanged: () => void;
+    onSidebarChange: (state: BenchmarkSyncSidebarState) => void;
+    refreshKey: number;
+}
+
+export interface BenchmarkSyncSidebarState {
+    incomingRequests: BenchmarkSyncPairRequest[];
+    peers: BenchmarkSyncPeer[];
+    logs: BenchmarkSyncLog[];
+}
+
+export const emptyBenchmarkSyncSidebar: BenchmarkSyncSidebarState = {
+    incomingRequests: [],
+    peers: [],
+    logs: [],
+};
+
+export function benchmarkSyncSidebarState(state: BenchmarkSyncState): BenchmarkSyncSidebarState {
+    return {
+        incomingRequests: (state.incomingRequests || []).filter((request) => request.status === 'pending'),
+        peers: state.peers || [],
+        logs: state.logs || [],
+    };
 }
 
 function formatTime(value: string): string {
@@ -41,7 +63,7 @@ function syncDirectionLabel(direction: string): string {
     return direction;
 }
 
-export default function BenchmarkSyncWorkspace({onBenchmarkHistoryChanged}: BenchmarkSyncProps) {
+export default function BenchmarkSyncWorkspace({onBenchmarkHistoryChanged, onSidebarChange, refreshKey}: BenchmarkSyncProps) {
     const [state, setState] = useState<BenchmarkSyncState | null>(null);
     const [deviceName, setDeviceName] = useState('');
     const [address, setAddress] = useState('');
@@ -66,7 +88,15 @@ export default function BenchmarkSyncWorkspace({onBenchmarkHistoryChanged}: Benc
 
     useEffect(() => {
         void refresh();
-    }, [refresh]);
+    }, [refresh, refreshKey]);
+
+    useEffect(() => {
+        if (state) {
+            onSidebarChange(benchmarkSyncSidebarState(state));
+        }
+    }, [onSidebarChange, state]);
+
+    useEffect(() => () => onSidebarChange(emptyBenchmarkSyncSidebar), [onSidebarChange]);
 
     useEffect(() => {
         if (!(state?.outgoingRequests || []).some((request) => request.status === 'pending')) return undefined;

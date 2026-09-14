@@ -312,10 +312,132 @@
     margin: 0;
 }
 
-.sync-sidebar small {
+.sync-sidebar > small {
     margin-top: auto;
     color: #96968e;
     font-size: 10px;
+}
+
+.sync-sidebar-requests,
+.sync-sidebar-peers {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.sync-sidebar-peers {
+    flex: 1 1 auto;
+}
+
+.sync-sidebar-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    min-height: 23px;
+    padding: 2px 3px;
+    color: #6d8060;
+    gap: 5px;
+}
+
+.sync-sidebar-heading strong {
+    overflow: hidden;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sync-sidebar-heading small {
+    min-width: 16px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: #eaf0e1;
+    color: #5b7043;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1.3;
+    text-align: center;
+}
+
+.sync-sidebar-requests {
+    padding-bottom: 9px;
+    border-bottom: 1px solid #dfe8d5;
+}
+
+.sync-sidebar-request,
+.sync-sidebar-peer {
+    display: flex;
+    min-width: 0;
+    padding: 9px;
+    border: 1px solid #dde7d6;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.48);
+    flex-direction: column;
+    gap: 3px;
+}
+
+.sync-sidebar-request > strong,
+.sync-sidebar-peer > strong,
+.sync-sidebar-request > span,
+.sync-sidebar-peer > span,
+.sync-sidebar-peer > small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sync-sidebar-request > strong,
+.sync-sidebar-peer > strong {
+    color: #4b5941;
+    font-size: 11px;
+}
+
+.sync-sidebar-request > span,
+.sync-sidebar-peer > span {
+    color: #777f70;
+    font-size: 9px;
+}
+
+.sync-sidebar-peer > small {
+    color: #819074;
+    font-size: 9px;
+}
+
+.sync-sidebar-peer > small.failed {
+    color: #b15b50;
+}
+
+.sync-sidebar-request > div {
+    display: flex;
+    margin-top: 3px;
+    gap: 9px;
+}
+
+.sync-sidebar-request .text-button {
+    padding: 0;
+    font-size: 10px;
+}
+
+.sync-sidebar-peer-list {
+    display: grid;
+    min-height: 0;
+    overflow-y: auto;
+    flex: 1 1 auto;
+    gap: 5px;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+}
+
+.sync-sidebar-error {
+    padding: 8px 9px;
+    border: 1px solid #efd2cc;
+    border-radius: 7px;
+    background: #fff7f5;
+    color: #ad5649;
+    font-size: 10px;
+    line-height: 1.45;
 }
 
 .benchmark-sidebar-history-list {
