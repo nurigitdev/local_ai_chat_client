@@ -2051,7 +2051,7 @@ function App() {
                                 <span className="composer-token-usage-label">현재 모델 누적</span>
                                 {selectedModelUsage ? (
                                     <>
-                                        <strong className="composer-token-usage-total">합계 {formatTokenCount(selectedModelUsage.totalTokens)} 토큰</strong>
+                                        <strong className="composer-token-usage-total">합계 {formatTokenCount(selectedModelUsage.totalTokens)}</strong>
                                         <span className="composer-token-usage-detail">입력 {formatTokenCount(selectedModelUsage.promptTokens)} · 출력 {formatTokenCount(selectedModelUsage.completionTokens)}</span>
                                     </>
                                 ) : (
