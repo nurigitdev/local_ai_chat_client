@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 )
 
 func TestBenchmarkImportSourcePriorityAndOriginConflict(t *testing.T) {
@@ -104,5 +105,52 @@ func TestBenchmarkSyncPairingAndPush(t *testing.T) {
 	summaries, err := storeA.List()
 	if err != nil || len(summaries) != 1 || summaries[0].Source != benchmarkSourceSync || summaries[0].OriginDeviceName != "테스트 PC B" {
 		t.Fatalf("synced summaries = %#v, %v", summaries, err)
+	}
+}
+
+func TestBenchmarkSyncResetSessionClearsConnectionState(t *testing.T) {
+	syncStore := newBenchmarkSyncStore(t.TempDir(), newModelBenchmarkStore(t.TempDir()))
+	t.Cleanup(func() { _ = syncStore.Close() })
+	initial, err := syncStore.State()
+	if err != nil {
+		t.Fatalf("State() error = %v", err)
+	}
+
+	syncStore.mu.Lock()
+	syncStore.state.DeviceName = "임시 동기화 PC"
+	syncStore.state.PairingCode = "ABCD-EFGH"
+	syncStore.state.PairingExpiresAt = time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano)
+	syncStore.state.Peers = []BenchmarkSyncPeer{{DeviceID: "peer-a", DeviceName: "다른 PC", Address: "http://127.0.0.1:39391"}}
+	syncStore.state.PeerInboundTokens = map[string]string{"peer-a": "inbound-token"}
+	syncStore.state.PeerOutboundTokens = map[string]string{"peer-a": "outbound-token"}
+	syncStore.state.Incoming = []BenchmarkSyncPairRequest{{RequestID: "incoming-request", Status: "pending"}}
+	syncStore.state.Outgoing = []BenchmarkSyncPairRequest{{RequestID: "outgoing-request", Status: "pending"}}
+	syncStore.state.PairSecrets = map[string]benchmarkSyncPairSecrets{"incoming-request": {RequesterToken: "request-token"}}
+	syncStore.state.Logs = []BenchmarkSyncLog{{ID: "sync-log", Direction: "bidirectional", Status: "completed"}}
+	syncStore.state.Ignored = []string{"preserve-this-fingerprint"}
+	if err := syncStore.saveLocked(); err != nil {
+		syncStore.mu.Unlock()
+		t.Fatalf("saveLocked() error = %v", err)
+	}
+	syncStore.mu.Unlock()
+
+	if err := syncStore.ResetSession(); err != nil {
+		t.Fatalf("ResetSession() error = %v", err)
+	}
+	next, err := syncStore.State()
+	if err != nil {
+		t.Fatalf("State() after ResetSession error = %v", err)
+	}
+	if next.DeviceID != initial.DeviceID || next.DeviceName == "임시 동기화 PC" {
+		t.Fatalf("session identity was not reset: %#v", next)
+	}
+	if next.PairingCode != "" || len(next.Peers) != 0 || len(next.IncomingRequests) != 0 || len(next.OutgoingRequests) != 0 || len(next.Logs) != 0 {
+		t.Fatalf("session state was not cleared: %#v", next)
+	}
+	syncStore.mu.Lock()
+	ignored := append([]string(nil), syncStore.state.Ignored...)
+	syncStore.mu.Unlock()
+	if len(ignored) != 1 || ignored[0] != "preserve-this-fingerprint" {
+		t.Fatalf("ignored fingerprints were not preserved: %#v", ignored)
 	}
 }

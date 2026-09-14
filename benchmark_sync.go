@@ -138,6 +138,41 @@ func newBenchmarkSyncStore(root string, benchmarks *modelBenchmarkStore) *benchm
 	}
 }
 
+func newBenchmarkSyncSessionState() (benchmarkSyncPersistentState, error) {
+	name, err := os.Hostname()
+	if err != nil || strings.TrimSpace(name) == "" {
+		name = "Agent Chat"
+	}
+	if name, err = normalizeBenchmarkSyncDeviceName(name); err != nil {
+		name = "Agent Chat"
+	}
+	id, err := newBenchmarkSyncSecret(20)
+	if err != nil {
+		return benchmarkSyncPersistentState{}, err
+	}
+	return benchmarkSyncPersistentState{DeviceID: strings.ToLower(id), DeviceName: name}, nil
+}
+
+// ResetSession starts a new sync session for an application launch. Completed
+// benchmarks and ignored fingerprints stay local, but connection credentials
+// and all visible sync-session information are intentionally discarded. The
+// stable device ID is retained so a new pairing replaces its stale peer entry.
+func (s *benchmarkSyncStore) ResetSession() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureLoadedLocked(); err != nil {
+		return err
+	}
+	next, err := newBenchmarkSyncSessionState()
+	if err != nil {
+		return err
+	}
+	next.DeviceID = s.state.DeviceID
+	next.Ignored = append([]string(nil), s.state.Ignored...)
+	s.state = next
+	return s.saveLocked()
+}
+
 func (s *benchmarkSyncStore) State() (BenchmarkSyncState, error) {
 	if err := s.ensureServer(); err != nil {
 		return BenchmarkSyncState{}, err
@@ -796,18 +831,11 @@ func (s *benchmarkSyncStore) ensureLoadedLocked() error {
 	}
 	contents, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		name, nameErr := os.Hostname()
-		if nameErr != nil || strings.TrimSpace(name) == "" {
-			name = "Agent Chat"
+		state, stateErr := newBenchmarkSyncSessionState()
+		if stateErr != nil {
+			return stateErr
 		}
-		if name, nameErr = normalizeBenchmarkSyncDeviceName(name); nameErr != nil {
-			name = "Agent Chat"
-		}
-		id, idErr := newBenchmarkSyncSecret(20)
-		if idErr != nil {
-			return idErr
-		}
-		s.state = benchmarkSyncPersistentState{DeviceID: strings.ToLower(id), DeviceName: name}
+		s.state = state
 		s.loaded = true
 		return s.saveLocked()
 	}

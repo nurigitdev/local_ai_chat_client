@@ -245,7 +245,7 @@ func NewApp() *App {
 
 func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
 	a.ctx = ctx
-	return nil
+	return a.sync.ResetSession()
 }
 
 func (a *App) ServiceShutdown() error {
