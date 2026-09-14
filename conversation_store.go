@@ -32,6 +32,7 @@ type ConversationMessage struct {
 	Role        string           `json:"role"`
 	Content     string           `json:"content"`
 	Status      string           `json:"status"`
+	Model       string           `json:"model,omitempty"`
 	Attachments []ChatAttachment `json:"attachments,omitempty"`
 	Usage       *TokenUsage      `json:"usage,omitempty"`
 	Metrics     *ResponseMetrics `json:"metrics,omitempty"`
@@ -271,6 +272,7 @@ func marshalConversation(conversation Conversation) ([]byte, error) {
 			ID          string           `json:"id"`
 			Role        string           `json:"role"`
 			Status      string           `json:"status"`
+			Model       string           `json:"model,omitempty"`
 			Content     int              `json:"contentBytes"`
 			Attachments []ChatAttachment `json:"attachments,omitempty"`
 			Usage       *TokenUsage      `json:"usage,omitempty"`
@@ -279,6 +281,7 @@ func marshalConversation(conversation Conversation) ([]byte, error) {
 			ID:          message.ID,
 			Role:        message.Role,
 			Status:      message.Status,
+			Model:       message.Model,
 			Content:     len([]byte(message.Content)),
 			Attachments: message.Attachments,
 			Usage:       message.Usage,
@@ -332,6 +335,7 @@ func parseConversation(contents []byte) (Conversation, error) {
 			ID          string           `json:"id"`
 			Role        string           `json:"role"`
 			Status      string           `json:"status"`
+			Model       string           `json:"model,omitempty"`
 			Content     *int             `json:"contentBytes"`
 			Attachments []ChatAttachment `json:"attachments,omitempty"`
 			Usage       *TokenUsage      `json:"usage,omitempty"`
@@ -359,7 +363,7 @@ func parseConversation(contents []byte) (Conversation, error) {
 			content = strings.TrimRight(body[contentStart:contentEnd], "\n")
 		}
 		messages = append(messages, ConversationMessage{
-			ID: metadata.ID, Role: metadata.Role, Status: metadata.Status, Content: content,
+			ID: metadata.ID, Role: metadata.Role, Status: metadata.Status, Model: metadata.Model, Content: content,
 			Attachments: metadata.Attachments, Usage: metadata.Usage, Metrics: metadata.Metrics,
 		})
 	}

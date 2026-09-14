@@ -2441,6 +2441,10 @@ button:disabled {
     border-bottom: 1px solid #ebebe6;
 }
 
+.app-shell.sidebar-collapsed .chat-header {
+    padding-left: 64px;
+}
+
 .chat-header > div:first-child {
     display: flex;
     flex-direction: column;
@@ -3356,6 +3360,13 @@ button:disabled {
     content: '·';
 }
 
+.message-metrics-model {
+    max-width: 100%;
+    color: #587488;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+
 .message-actions {
     display: flex;
     gap: 5px;
@@ -3466,7 +3477,7 @@ button:disabled {
     display: flex;
     min-width: 0;
     align-items: baseline;
-    gap: 7px;
+    gap: 8px;
     margin-left: auto;
     color: #898981;
     font-size: 9px;
@@ -3474,12 +3485,24 @@ button:disabled {
     white-space: nowrap;
 }
 
-.composer-token-usage strong {
+.composer-token-usage-label {
+    color: #75756e;
+    font-size: 9px;
+    font-weight: 700;
+}
+
+.composer-token-usage-total {
     overflow: hidden;
-    color: #55554f;
-    font-size: 10px;
-    font-weight: 650;
+    color: #2e5f79;
+    font-size: 13px;
+    font-weight: 750;
+    letter-spacing: -0.02em;
     text-overflow: ellipsis;
+}
+
+.composer-token-usage-detail {
+    color: #92928a;
+    font-size: 9px;
 }
 
 @container (max-width: 620px) {
@@ -3651,6 +3674,10 @@ button:disabled {
     .sidebar-show-button {
         top: 14px;
         left: 14px;
+    }
+
+    .app-shell.sidebar-collapsed .chat-header {
+        padding-left: 58px;
     }
 
     .message-column {

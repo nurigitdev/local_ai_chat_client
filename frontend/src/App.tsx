@@ -43,6 +43,7 @@ interface UIMessage {
     role: Role;
     content: string;
     status: MessageStatus;
+    model?: string;
     attachments: ChatAttachment[];
     usage?: TokenUsage;
     metrics?: ResponseMetrics;
@@ -155,6 +156,7 @@ function toUIMessage(message: ConversationMessage): UIMessage {
         status: ['complete', 'streaming', 'cancelled', 'failed'].includes(message.status)
             ? message.status as MessageStatus
             : 'complete',
+        model: message.model || undefined,
         attachments: message.attachments || [],
         usage: message.usage ?? undefined,
         metrics: message.metrics ?? undefined,
@@ -162,11 +164,12 @@ function toUIMessage(message: ConversationMessage): UIMessage {
 }
 
 function toStoredMessages(messages: UIMessage[]): ConversationMessage[] {
-    return messages.map(({id, role, content, status, attachments, usage, metrics}) => ({
+    return messages.map(({id, role, content, status, model, attachments, usage, metrics}) => ({
         id,
         role,
         content,
         status,
+        model,
         attachments,
         usage,
         metrics,
@@ -1350,7 +1353,7 @@ function App() {
             ...selectAttachmentContent(attachment.source, attachment.chunks, text, attachmentBudget),
         }));
         const userMessage: UIMessage = {id: makeID(), role: 'user', content: text, status: 'complete', attachments: selectedAttachments};
-        const assistantMessage: UIMessage = {id: makeID(), role: 'assistant', content: '', status: 'streaming', attachments: []};
+        const assistantMessage: UIMessage = {id: makeID(), role: 'assistant', content: '', status: 'streaming', model: selectedModel, attachments: []};
         const nextMessages = [...messagesRef.current, userMessage, assistantMessage];
         setInput('');
         setAttachments([]);
@@ -1412,7 +1415,7 @@ function App() {
             return;
         }
 
-        const assistantMessage: UIMessage = {id: messageID, role: 'assistant', content: '', status: 'streaming', attachments: []};
+        const assistantMessage: UIMessage = {id: messageID, role: 'assistant', content: '', status: 'streaming', model: selectedModel, attachments: []};
         await beginAssistantResponse(conversation, assistantMessage, [...previousMessages, assistantMessage], previousMessages);
     }
 
@@ -1522,6 +1525,14 @@ function App() {
         }
     }
 
+    function handleAPIKeyKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        if (!busy && !loadingModels) {
+            void loadModels();
+        }
+    }
+
     function renderConnectionSettings() {
         return (
             <main className="connection-panel" aria-label="연결 설정">
@@ -1616,6 +1627,7 @@ function App() {
                             <input
                                 value={apiKey}
                                 onChange={(event) => setAPIKey(event.target.value)}
+                                onKeyDown={handleAPIKeyKeyDown}
                                 placeholder={usingBuiltInConnectionProfile ? 'OpenRouter API 키 입력' : '필요한 경우 입력'}
                                 type="password"
                                 autoComplete="off"
@@ -1969,6 +1981,7 @@ function App() {
                                         {message.status === 'failed' && <span className="message-state error-state">실패</span>}
                                         {message.role === 'assistant' && message.metrics && (
                                             <div className="message-metrics">
+                                                {message.model && <span className="message-metrics-model">모델 {message.model}</span>}
                                                 <span>응답 {formatDuration(message.metrics.totalDurationMs)}</span>
                                                 {message.metrics.firstTokenDurationMs > 0 && (
                                                     <span>첫 토큰 {formatDuration(message.metrics.firstTokenDurationMs)}</span>
@@ -2035,13 +2048,14 @@ function App() {
                                 </span>
                             )}
                             <div className="composer-token-usage" aria-label="현재 모델의 누적 채팅 토큰 사용량">
-                                <span>현재 모델 누적</span>
+                                <span className="composer-token-usage-label">현재 모델 누적</span>
                                 {selectedModelUsage ? (
-                                    <strong>
-                                        입력 {formatTokenCount(selectedModelUsage.promptTokens)} · 출력 {formatTokenCount(selectedModelUsage.completionTokens)} · 합계 {formatTokenCount(selectedModelUsage.totalTokens)}
-                                    </strong>
+                                    <>
+                                        <strong className="composer-token-usage-total">합계 {formatTokenCount(selectedModelUsage.totalTokens)} 토큰</strong>
+                                        <span className="composer-token-usage-detail">입력 {formatTokenCount(selectedModelUsage.promptTokens)} · 출력 {formatTokenCount(selectedModelUsage.completionTokens)}</span>
+                                    </>
                                 ) : (
-                                    <strong>{selectedModel ? '사용량 없음' : '모델 미선택'}</strong>
+                                    <strong className="composer-token-usage-total">{selectedModel ? '사용량 없음' : '모델 미선택'}</strong>
                                 )}
                             </div>
                         </div>

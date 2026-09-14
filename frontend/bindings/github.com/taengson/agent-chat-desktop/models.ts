@@ -55,6 +55,7 @@ export interface ConversationMessage {
     "role": string;
     "content": string;
     "status": string;
+    "model"?: string;
     "attachments"?: ChatAttachment[] | null;
     "usage"?: TokenUsage | null;
     "metrics"?: ResponseMetrics | null;

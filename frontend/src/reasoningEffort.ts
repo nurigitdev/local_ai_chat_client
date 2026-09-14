@@ -1,18 +1,18 @@
 export type ReasoningEffort = '' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const reasoningEffortOptions: Array<{value: ReasoningEffort; label: string}> = [
-    {value: '', label: '자동 (서버 기본값)'},
+    {value: '', label: '자동 (auto)'},
     {value: 'none', label: '없음 (none)'},
-    {value: 'minimal', label: '최소'},
-    {value: 'low', label: '낮음'},
-    {value: 'medium', label: '보통'},
-    {value: 'high', label: '높음'},
-    {value: 'xhigh', label: 'xhigh'},
-    {value: 'max', label: 'max'},
+    {value: 'minimal', label: '최소 (minimal)'},
+    {value: 'low', label: '낮음 (low)'},
+    {value: 'medium', label: '보통 (medium)'},
+    {value: 'high', label: '높음 (high)'},
+    {value: 'xhigh', label: '매우 높음 (xhigh)'},
+    {value: 'max', label: '최대 (max)'},
 ];
 
 export function reasoningEffortLabel(value?: string): string {
-    return reasoningEffortOptions.find((option) => option.value === value)?.label || '자동 (서버 기본값)';
+    return reasoningEffortOptions.find((option) => option.value === value)?.label || '자동 (auto)';
 }
 
 export function reasoningEffortFilenameTag(value?: string): string {

@@ -106,6 +106,7 @@ func TestConversationStoreCreatesSavesAndOpensMarkdownConversation(t *testing.T)
 		},
 		{
 			ID: "assistant-1", Role: "assistant", Content: "\n네, 가능합니다.\n", Status: "complete",
+			Model:   "example-model",
 			Usage:   &TokenUsage{PromptTokens: 21, CompletionTokens: 8, TotalTokens: 29},
 			Metrics: &ResponseMetrics{TotalDurationMs: 1_250, FirstTokenDurationMs: 340},
 		},
@@ -144,6 +145,9 @@ func TestConversationStoreCreatesSavesAndOpensMarkdownConversation(t *testing.T)
 	}
 	if opened.Messages[1].Metrics == nil || *opened.Messages[1].Metrics != (ResponseMetrics{TotalDurationMs: 1_250, FirstTokenDurationMs: 340}) {
 		t.Fatalf("Open() metrics = %#v", opened.Messages[1].Metrics)
+	}
+	if opened.Messages[1].Model != "example-model" {
+		t.Fatalf("Open() model = %q, want %q", opened.Messages[1].Model, "example-model")
 	}
 
 	if err := store.Delete(saved.ID); err != nil {
