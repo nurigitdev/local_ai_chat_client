@@ -228,15 +228,18 @@ type App struct {
 	conversations *conversationStore
 	profiles      *connectionProfileStore
 	benchmarks    *modelBenchmarkStore
+	sync          *benchmarkSyncStore
 	eventSink     func(ChatEvent)
 }
 
 func NewApp() *App {
+	benchmarks := newModelBenchmarkStore("")
 	return &App{
 		cancels:       make(map[string]context.CancelFunc),
 		conversations: newConversationStore(""),
 		profiles:      newConnectionProfileStore(""),
-		benchmarks:    newModelBenchmarkStore(""),
+		benchmarks:    benchmarks,
+		sync:          newBenchmarkSyncStore("", benchmarks),
 	}
 }
 
@@ -247,12 +250,12 @@ func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) 
 
 func (a *App) ServiceShutdown() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	for id, cancel := range a.cancels {
 		cancel()
 		delete(a.cancels, id)
 	}
-	return nil
+	a.mu.Unlock()
+	return a.sync.Close()
 }
 
 func (a *App) ListModels(profile ConnectionProfile) ([]Model, error) {
@@ -336,6 +339,15 @@ func (a *App) OpenModelBenchmark(id string) (ModelBenchmark, error) {
 }
 
 func (a *App) DeleteModelBenchmark(id string) error {
+	benchmark, err := a.benchmarks.Open(id)
+	if err != nil {
+		return err
+	}
+	if benchmark.Source != benchmarkSourceLocal {
+		if err := a.sync.IgnoreBenchmark(benchmark); err != nil {
+			return err
+		}
+	}
 	return a.benchmarks.Delete(id)
 }
 
@@ -343,6 +355,46 @@ func (a *App) DeleteModelBenchmark(id string) error {
 // HTML benchmark report to the local benchmark history.
 func (a *App) ImportBenchmarkReport(path string) (ModelBenchmarkImportResult, error) {
 	return a.benchmarks.ImportReport(path)
+}
+
+func (a *App) GetBenchmarkSyncState() (BenchmarkSyncState, error) {
+	return a.sync.State()
+}
+
+func (a *App) UpdateBenchmarkSyncDeviceName(name string) (BenchmarkSyncState, error) {
+	return a.sync.UpdateDeviceName(name)
+}
+
+func (a *App) CreateBenchmarkSyncPairingCode() (BenchmarkSyncState, error) {
+	return a.sync.CreatePairingCode()
+}
+
+func (a *App) StartBenchmarkSyncPairing(address, code string) (BenchmarkSyncState, error) {
+	return a.sync.StartPairing(address, code)
+}
+
+func (a *App) CheckBenchmarkSyncPairing(requestID string) (BenchmarkSyncState, error) {
+	return a.sync.CheckPairing(requestID)
+}
+
+func (a *App) ApproveBenchmarkSyncPairing(requestID string) (BenchmarkSyncState, error) {
+	return a.sync.ApprovePairing(requestID)
+}
+
+func (a *App) RejectBenchmarkSyncPairing(requestID string) (BenchmarkSyncState, error) {
+	return a.sync.RejectPairing(requestID)
+}
+
+func (a *App) DeleteBenchmarkSyncPeer(deviceID string) (BenchmarkSyncState, error) {
+	return a.sync.DeletePeer(deviceID)
+}
+
+func (a *App) RunBenchmarkSync(deviceID, direction string) (BenchmarkSyncState, error) {
+	return a.sync.Run(deviceID, direction)
+}
+
+func (a *App) ClearBenchmarkSyncLogs() (BenchmarkSyncState, error) {
+	return a.sync.ClearLogs()
 }
 
 // SaveBenchmarkExport writes a user-selected benchmark report.

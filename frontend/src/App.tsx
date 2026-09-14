@@ -18,6 +18,7 @@ import type {
     TokenUsage,
 } from '../bindings/github.com/taengson/agent-chat-desktop/models';
 import ModelBenchmarkWorkspace, {type ModelBenchmarkSidebarState} from './ModelBenchmark';
+import BenchmarkSyncWorkspace from './BenchmarkSync';
 import OpenRouterModelPicker, {isOpenRouterURL} from './OpenRouterModelPicker';
 import {messagesForModel} from './chatContext';
 import {
@@ -76,11 +77,12 @@ interface ModelTokenUsage {
     totalTokens: number;
 }
 
-type BenchmarkHistorySection = 'recent' | 'imported';
+type BenchmarkHistorySection = 'recent' | 'imported' | 'synchronized';
 
 interface BenchmarkHistorySectionOpenState {
     recent: boolean;
     imported: boolean;
+    synchronized: boolean;
 }
 
 const defaultBaseURL = 'http://localhost:8000';
@@ -114,11 +116,12 @@ const emptyBenchmarkSidebar: ModelBenchmarkSidebarState = {
     caseCount: 0,
     recent: [],
     imported: [],
+    synchronized: [],
     isHistoryLoading: false,
 };
 
 function loadBenchmarkHistorySectionOpenState(): BenchmarkHistorySectionOpenState {
-    const fallback = {recent: true, imported: true};
+    const fallback = {recent: true, imported: true, synchronized: true};
     if (typeof window === 'undefined') return fallback;
     try {
         const stored = window.localStorage.getItem(benchmarkHistorySectionStateStorageKey);
@@ -127,6 +130,7 @@ function loadBenchmarkHistorySectionOpenState(): BenchmarkHistorySectionOpenStat
         return {
             recent: typeof parsed.recent === 'boolean' ? parsed.recent : fallback.recent,
             imported: typeof parsed.imported === 'boolean' ? parsed.imported : fallback.imported,
+            synchronized: typeof parsed.synchronized === 'boolean' ? parsed.synchronized : fallback.synchronized,
         };
     } catch {
         return fallback;
@@ -587,7 +591,7 @@ function AssistantMessageContent({content}: {content: string}) {
 }
 
 function App() {
-    const [workspace, setWorkspace] = useState<'chat' | 'benchmark'>('chat');
+    const [workspace, setWorkspace] = useState<'chat' | 'benchmark' | 'sync'>('chat');
     const [sidebarVisible, setSidebarVisible] = useState(true);
     const [benchmarkBusy, setBenchmarkBusy] = useState(false);
     const [benchmarkSidebar, setBenchmarkSidebar] = useState<ModelBenchmarkSidebarState>(emptyBenchmarkSidebar);
@@ -727,6 +731,7 @@ function App() {
                 ...current,
                 recent: current.recent.filter((item) => item.id !== summary.id),
                 imported: current.imported.filter((item) => item.id !== summary.id),
+                synchronized: current.synchronized.filter((item) => item.id !== summary.id),
             }));
             setBenchmarkOpenRequestID((current) => current === summary.id ? null : current);
             setBenchmarkHistoryRefreshKey((current) => current + 1);
@@ -1713,6 +1718,17 @@ function App() {
                     >
                         모델 실험실
                     </button>
+                    <button
+                        className={workspace === 'sync' ? 'active' : ''}
+                        type="button"
+                        onClick={() => {
+                            setWorkspace('sync');
+                            setConnectionSettingsOpen(false);
+                        }}
+                        disabled={busy || benchmarkBusy}
+                    >
+                        결과 동기화
+                    </button>
                 </nav>
 
                 {workspace === 'chat' ? (
@@ -1796,7 +1812,7 @@ function App() {
                     </div>
                 </section>
                     </>
-                ) : (
+                ) : workspace === 'benchmark' ? (
                     <section className="benchmark-sidebar">
                         <div className="section-heading"><span>모델 실험실</span></div>
                         {benchmarkSidebar.model ? (
@@ -1872,8 +1888,45 @@ function App() {
                                     ))}
                                 </div>}
                             </section>
+                            <section className={`benchmark-sidebar-history synchronized ${benchmarkHistorySectionOpen.synchronized ? 'expanded' : 'collapsed'}`} aria-label="동기화된 벤치마크">
+                                <button
+                                    className="benchmark-sidebar-history-toggle"
+                                    type="button"
+                                    aria-expanded={benchmarkHistorySectionOpen.synchronized}
+                                    aria-controls="benchmark-sidebar-synchronized-list"
+                                    onClick={() => toggleBenchmarkHistorySection('synchronized')}
+                                >
+                                    <span aria-hidden="true">{benchmarkHistorySectionOpen.synchronized ? '⌄' : '›'}</span>
+                                    <strong>동기화된 벤치마크</strong>
+                                    <small>{benchmarkSidebar.synchronized.length}</small>
+                                </button>
+                                {benchmarkHistorySectionOpen.synchronized && <div className="benchmark-sidebar-history-list" id="benchmark-sidebar-synchronized-list">
+                                    {benchmarkSidebar.isHistoryLoading && <small>기록을 불러오는 중…</small>}
+                                    {!benchmarkSidebar.isHistoryLoading && benchmarkSidebar.synchronized.length === 0 && <small>동기화된 벤치마크가 없습니다.</small>}
+                                    {benchmarkSidebar.synchronized.map((item) => (
+                                        <button
+                                            className="benchmark-sidebar-history-item"
+                                            key={item.id}
+                                            type="button"
+                                            disabled={benchmarkBusy}
+                                            onClick={() => setBenchmarkOpenRequestID(item.id)}
+                                            title={`${item.originDeviceName || '다른 PC'} · ${item.profileName} · ${item.model}`}
+                                        >
+                                            <strong>{item.profileName} · {item.model}</strong>
+                                            <span>{item.originDeviceName || '다른 PC'}에서 동기화</span>
+                                            <small>{item.suiteName} · {item.completedCaseCount}/{item.caseCount}개 · {formatUpdatedAt(item.updatedAt)}</small>
+                                        </button>
+                                    ))}
+                                </div>}
+                            </section>
                         </div>
                         <small>연결 프로필 {savedConnectionProfiles.length}개 · 기본 1개 포함</small>
+                    </section>
+                ) : (
+                    <section className="sync-sidebar" aria-label="결과 동기화">
+                        <div className="section-heading"><span>결과 동기화</span></div>
+                        <p>신뢰하는 같은 네트워크의 PC와 벤치마크 결과를 주고받습니다.</p>
+                        <small>API 키, 연결 설정, 대화 내용은 전송하지 않습니다.</small>
                     </section>
                 )}
             </aside>
@@ -1902,6 +1955,8 @@ function App() {
                         onRequestBenchmarkDelete={requestBenchmarkDelete}
                     />
                 </main>
+            ) : workspace === 'sync' ? (
+                <BenchmarkSyncWorkspace onBenchmarkHistoryChanged={() => setBenchmarkHistoryRefreshKey((current) => current + 1)}/>
             ) : connectionSettingsOpen ? (
                 renderConnectionSettings()
             ) : (

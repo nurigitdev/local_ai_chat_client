@@ -15,6 +15,12 @@ import (
 
 const modelBenchmarkDirectory = "model-benchmarks"
 
+const (
+	benchmarkSourceLocal  = "local"
+	benchmarkSourceReport = "report"
+	benchmarkSourceSync   = "sync"
+)
+
 var modelBenchmarkMarker = regexp.MustCompile(`(?m)^<!-- agent-chat-model-benchmark (\{.*\}) -->$`)
 
 type ModelBenchmarkCase struct {
@@ -30,23 +36,31 @@ type ModelBenchmarkCase struct {
 }
 
 type ModelBenchmark struct {
-	ID              string               `json:"id"`
-	Imported        bool                 `json:"imported"`
-	ProfileID       string               `json:"profileID"`
-	ProfileName     string               `json:"profileName"`
-	ProfileBaseURL  string               `json:"profileBaseURL"`
-	Model           string               `json:"model"`
-	ReasoningEffort string               `json:"reasoningEffort,omitempty"`
-	SuiteName       string               `json:"suiteName"`
-	Status          string               `json:"status"`
-	CreatedAt       string               `json:"createdAt"`
-	UpdatedAt       string               `json:"updatedAt"`
-	Cases           []ModelBenchmarkCase `json:"cases"`
+	ID       string `json:"id"`
+	Imported bool   `json:"imported"`
+	// Source keeps the record's local provenance. Imported is retained for
+	// compatibility with reports created by older versions of the app.
+	Source            string               `json:"source,omitempty"`
+	OriginDeviceID    string               `json:"originDeviceID,omitempty"`
+	OriginDeviceName  string               `json:"originDeviceName,omitempty"`
+	OriginBenchmarkID string               `json:"originBenchmarkID,omitempty"`
+	ProfileID         string               `json:"profileID"`
+	ProfileName       string               `json:"profileName"`
+	ProfileBaseURL    string               `json:"profileBaseURL"`
+	Model             string               `json:"model"`
+	ReasoningEffort   string               `json:"reasoningEffort,omitempty"`
+	SuiteName         string               `json:"suiteName"`
+	Status            string               `json:"status"`
+	CreatedAt         string               `json:"createdAt"`
+	UpdatedAt         string               `json:"updatedAt"`
+	Cases             []ModelBenchmarkCase `json:"cases"`
 }
 
 type ModelBenchmarkSummary struct {
 	ID                          string  `json:"id"`
 	Imported                    bool    `json:"imported"`
+	Source                      string  `json:"source"`
+	OriginDeviceName            string  `json:"originDeviceName,omitempty"`
 	SuiteName                   string  `json:"suiteName"`
 	Model                       string  `json:"model"`
 	ReasoningEffort             string  `json:"reasoningEffort,omitempty"`
@@ -76,6 +90,10 @@ func (s *modelBenchmarkStore) Create(benchmark ModelBenchmark) (ModelBenchmark, 
 
 	benchmark = normalizeModelBenchmark(benchmark)
 	benchmark.Imported = false
+	benchmark.Source = benchmarkSourceLocal
+	benchmark.OriginDeviceID = ""
+	benchmark.OriginDeviceName = ""
+	benchmark.OriginBenchmarkID = ""
 	if benchmark.ID == "" {
 		benchmark.ID = newConversationID()
 	}
@@ -96,6 +114,9 @@ func (s *modelBenchmarkStore) Save(benchmark ModelBenchmark) (ModelBenchmark, er
 	defer s.mu.Unlock()
 
 	benchmark = normalizeModelBenchmark(benchmark)
+	if benchmark.Source != benchmarkSourceLocal {
+		return ModelBenchmark{}, errors.New("가져온 벤치마크 결과는 수정할 수 없습니다")
+	}
 	if benchmark.CreatedAt == "" {
 		return ModelBenchmark{}, errors.New("벤치마크 생성 시간이 없습니다")
 	}
@@ -238,6 +259,18 @@ func (s *modelBenchmarkStore) directory() (string, error) {
 
 func normalizeModelBenchmark(benchmark ModelBenchmark) ModelBenchmark {
 	benchmark.ID = strings.TrimSpace(benchmark.ID)
+	benchmark.Source = strings.TrimSpace(strings.ToLower(benchmark.Source))
+	if benchmark.Source == "" {
+		if benchmark.Imported {
+			benchmark.Source = benchmarkSourceReport
+		} else {
+			benchmark.Source = benchmarkSourceLocal
+		}
+	}
+	benchmark.OriginDeviceID = strings.TrimSpace(benchmark.OriginDeviceID)
+	benchmark.OriginDeviceName = normalizeProfileName(benchmark.OriginDeviceName)
+	benchmark.OriginBenchmarkID = strings.TrimSpace(benchmark.OriginBenchmarkID)
+	benchmark.Imported = benchmark.Source != benchmarkSourceLocal
 	benchmark.ProfileID = strings.TrimSpace(benchmark.ProfileID)
 	benchmark.ProfileName = normalizeProfileName(benchmark.ProfileName)
 	benchmark.ProfileBaseURL = strings.TrimSpace(benchmark.ProfileBaseURL)
@@ -258,6 +291,14 @@ func normalizeModelBenchmark(benchmark ModelBenchmark) ModelBenchmark {
 func validateModelBenchmark(benchmark ModelBenchmark) error {
 	if !isSafeConversationID(benchmark.ID) {
 		return errors.New("올바르지 않은 벤치마크 ID입니다")
+	}
+	if benchmark.Source != benchmarkSourceLocal && benchmark.Source != benchmarkSourceReport && benchmark.Source != benchmarkSourceSync {
+		return errors.New("올바르지 않은 벤치마크 출처입니다")
+	}
+	if benchmark.Source == benchmarkSourceSync {
+		if benchmark.OriginDeviceID == "" || benchmark.OriginBenchmarkID == "" {
+			return errors.New("동기화된 벤치마크의 원본 정보가 없습니다")
+		}
 	}
 	if !isSafeConnectionProfileID(benchmark.ProfileID) || benchmark.ProfileName == "" {
 		return errors.New("저장된 연결 프로필을 선택해 주세요")
@@ -372,16 +413,18 @@ func modelBenchmarkTitle(benchmark ModelBenchmark) string {
 
 func modelBenchmarkSummary(benchmark ModelBenchmark) ModelBenchmarkSummary {
 	summary := ModelBenchmarkSummary{
-		ID:              benchmark.ID,
-		Imported:        benchmark.Imported,
-		SuiteName:       modelBenchmarkTitle(benchmark),
-		Model:           benchmark.Model,
-		ReasoningEffort: benchmark.ReasoningEffort,
-		ProfileName:     benchmark.ProfileName,
-		ProfileBaseURL:  benchmark.ProfileBaseURL,
-		Status:          benchmark.Status,
-		UpdatedAt:       benchmark.UpdatedAt,
-		CaseCount:       len(benchmark.Cases),
+		ID:               benchmark.ID,
+		Imported:         benchmark.Imported,
+		Source:           benchmark.Source,
+		OriginDeviceName: benchmark.OriginDeviceName,
+		SuiteName:        modelBenchmarkTitle(benchmark),
+		Model:            benchmark.Model,
+		ReasoningEffort:  benchmark.ReasoningEffort,
+		ProfileName:      benchmark.ProfileName,
+		ProfileBaseURL:   benchmark.ProfileBaseURL,
+		Status:           benchmark.Status,
+		UpdatedAt:        benchmark.UpdatedAt,
+		CaseCount:        len(benchmark.Cases),
 	}
 	var totalDuration int64
 	var firstTokenDuration int64

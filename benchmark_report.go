@@ -34,6 +34,17 @@ type ModelBenchmarkImportResult struct {
 	DuplicateCount int              `json:"duplicateCount"`
 }
 
+// benchmarkRecordImportOutcome is shared by report import and peer sync. It
+// keeps the UI-facing report result small while allowing sync logs to explain
+// skipped and conflicting records precisely.
+type benchmarkRecordImportOutcome struct {
+	Imported       []ModelBenchmark
+	DuplicateCount int
+	UpgradedCount  int
+	IgnoredCount   int
+	ConflictCount  int
+}
+
 func (s *modelBenchmarkStore) ImportReport(path string) (ModelBenchmarkImportResult, error) {
 	records, err := readBenchmarkReport(path)
 	if err != nil {
@@ -108,63 +119,102 @@ func parseBenchmarkReportPayload(encoded []byte) ([]ModelBenchmark, error) {
 }
 
 func (s *modelBenchmarkStore) importRecords(records []ModelBenchmark) (ModelBenchmarkImportResult, error) {
+	outcome, err := s.importRecordsFromSource(records, benchmarkSourceReport, nil)
+	if err != nil {
+		return ModelBenchmarkImportResult{}, err
+	}
+	return ModelBenchmarkImportResult{Imported: outcome.Imported, DuplicateCount: outcome.DuplicateCount}, nil
+}
+
+func (s *modelBenchmarkStore) importRecordsFromSource(records []ModelBenchmark, source string, ignored map[[sha256.Size]byte]struct{}) (benchmarkRecordImportOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if len(records) == 0 {
-		return ModelBenchmarkImportResult{}, errors.New("가져올 벤치마크 결과가 없습니다")
+		return benchmarkRecordImportOutcome{}, errors.New("가져올 벤치마크 결과가 없습니다")
 	}
 	directory, err := s.directory()
 	if err != nil {
-		return ModelBenchmarkImportResult{}, err
+		return benchmarkRecordImportOutcome{}, err
 	}
 
-	fingerprints, err := benchmarkImportFingerprints(directory)
+	existing, err := benchmarkStoredRecords(directory)
 	if err != nil {
-		return ModelBenchmarkImportResult{}, err
+		return benchmarkRecordImportOutcome{}, err
+	}
+	fingerprints := make(map[[sha256.Size]byte]ModelBenchmark, len(existing))
+	origins := make(map[string][sha256.Size]byte)
+	for fingerprint, benchmark := range existing {
+		fingerprints[fingerprint] = benchmark
+		if key := benchmarkOriginKey(benchmark); key != "" {
+			origins[key] = fingerprint
+		}
 	}
 
 	prepared := make([]ModelBenchmark, 0, len(records))
 	usedIDs := make(map[string]struct{}, len(records))
-	result := ModelBenchmarkImportResult{Imported: prepared}
+	result := benchmarkRecordImportOutcome{Imported: prepared}
 	for index, record := range records {
 		record = normalizeModelBenchmark(record)
-		record.Imported = true
+		record.Source = source
+		record.Imported = source != benchmarkSourceLocal
 		if err := validateModelBenchmark(record); err != nil {
-			return ModelBenchmarkImportResult{}, fmt.Errorf("%d번째 벤치마크 결과를 가져올 수 없습니다: %w", index+1, err)
+			return benchmarkRecordImportOutcome{}, fmt.Errorf("%d번째 벤치마크 결과를 가져올 수 없습니다: %w", index+1, err)
 		}
 		fingerprint, err := benchmarkImportFingerprint(record)
 		if err != nil {
-			return ModelBenchmarkImportResult{}, fmt.Errorf("%d번째 벤치마크 결과를 확인할 수 없습니다: %w", index+1, err)
+			return benchmarkRecordImportOutcome{}, fmt.Errorf("%d번째 벤치마크 결과를 확인할 수 없습니다: %w", index+1, err)
 		}
-		if _, exists := fingerprints[fingerprint]; exists {
+		if _, isIgnored := ignored[fingerprint]; isIgnored {
+			result.IgnoredCount++
+			continue
+		}
+		if existingRecord, exists := fingerprints[fingerprint]; exists {
+			if benchmarkSourcePriority(source) > benchmarkSourcePriority(existingRecord.Source) {
+				existingRecord.Source = source
+				existingRecord.Imported = source != benchmarkSourceLocal
+				if err := s.saveLocked(existingRecord); err != nil {
+					return benchmarkRecordImportOutcome{}, err
+				}
+				fingerprints[fingerprint] = existingRecord
+				result.UpgradedCount++
+			}
 			result.DuplicateCount++
 			continue
+		}
+		if origin := benchmarkOriginKey(record); origin != "" {
+			if originFingerprint, exists := origins[origin]; exists && originFingerprint != fingerprint {
+				result.ConflictCount++
+				continue
+			}
 		}
 		for benchmarkIDInUse(directory, record.ID, usedIDs) {
 			record.ID = newConversationID()
 		}
 		usedIDs[record.ID] = struct{}{}
-		fingerprints[fingerprint] = struct{}{}
+		fingerprints[fingerprint] = record
+		if origin := benchmarkOriginKey(record); origin != "" {
+			origins[origin] = fingerprint
+		}
 		prepared = append(prepared, record)
 	}
 
 	for _, record := range prepared {
 		if err := s.saveLocked(record); err != nil {
-			return ModelBenchmarkImportResult{}, err
+			return benchmarkRecordImportOutcome{}, err
 		}
 	}
 	result.Imported = prepared
 	return result, nil
 }
 
-func benchmarkImportFingerprints(directory string) (map[[sha256.Size]byte]struct{}, error) {
+func benchmarkStoredRecords(directory string) (map[[sha256.Size]byte]ModelBenchmark, error) {
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		return nil, fmt.Errorf("저장된 벤치마크 결과를 확인할 수 없습니다: %w", err)
 	}
 
-	fingerprints := make(map[[sha256.Size]byte]struct{}, len(entries))
+	fingerprints := make(map[[sha256.Size]byte]ModelBenchmark, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".md" {
 			continue
@@ -181,15 +231,39 @@ func benchmarkImportFingerprints(directory string) (map[[sha256.Size]byte]struct
 		if err != nil {
 			return nil, fmt.Errorf("저장된 벤치마크 결과를 확인할 수 없습니다: %w", err)
 		}
-		fingerprints[fingerprint] = struct{}{}
+		fingerprints[fingerprint] = benchmark
 	}
 	return fingerprints, nil
+}
+
+func benchmarkSourcePriority(source string) int {
+	switch source {
+	case benchmarkSourceLocal:
+		return 3
+	case benchmarkSourceReport:
+		return 2
+	case benchmarkSourceSync:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func benchmarkOriginKey(benchmark ModelBenchmark) string {
+	if benchmark.OriginDeviceID == "" || benchmark.OriginBenchmarkID == "" {
+		return ""
+	}
+	return benchmark.OriginDeviceID + "\x00" + benchmark.OriginBenchmarkID
 }
 
 func benchmarkImportFingerprint(benchmark ModelBenchmark) ([sha256.Size]byte, error) {
 	benchmark = normalizeModelBenchmark(benchmark)
 	benchmark.ID = ""
 	benchmark.Imported = false
+	benchmark.Source = ""
+	benchmark.OriginDeviceID = ""
+	benchmark.OriginDeviceName = ""
+	benchmark.OriginBenchmarkID = ""
 	payload, err := json.Marshal(benchmark)
 	if err != nil {
 		return [sha256.Size]byte{}, err

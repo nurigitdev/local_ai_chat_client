@@ -9,8 +9,24 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 // @ts-ignore: Unused imports
 import * as $models from "./models.js";
 
+export function ApproveBenchmarkSyncPairing(requestID: string): $CancellablePromise<$models.BenchmarkSyncState> {
+    return $Call.ByID(1241619706, requestID);
+}
+
 export function CancelChat(requestID: string): $CancellablePromise<boolean> {
     return $Call.ByID(2522773405, requestID);
+}
+
+export function CheckBenchmarkSyncPairing(requestID: string): $CancellablePromise<$models.BenchmarkSyncState> {
+    return $Call.ByID(3387929511, requestID);
+}
+
+export function ClearBenchmarkSyncLogs(): $CancellablePromise<$models.BenchmarkSyncState> {
+    return $Call.ByID(458136437);
+}
+
+export function CreateBenchmarkSyncPairingCode(): $CancellablePromise<$models.BenchmarkSyncState> {
+    return $Call.ByID(2196712624);
 }
 
 export function CreateConversation(): $CancellablePromise<$models.Conversation> {
@@ -19,6 +35,10 @@ export function CreateConversation(): $CancellablePromise<$models.Conversation> 
 
 export function CreateModelBenchmark(benchmark: $models.ModelBenchmark): $CancellablePromise<$models.ModelBenchmark> {
     return $Call.ByID(1784962657, benchmark);
+}
+
+export function DeleteBenchmarkSyncPeer(deviceID: string): $CancellablePromise<$models.BenchmarkSyncState> {
+    return $Call.ByID(3461360998, deviceID);
 }
 
 export function DeleteConversation(id: string): $CancellablePromise<void> {
@@ -31,6 +51,10 @@ export function DeleteModelBenchmark(id: string): $CancellablePromise<void> {
 
 export function DeleteSavedConnectionProfile(id: string): $CancellablePromise<void> {
     return $Call.ByID(4225912054, id);
+}
+
+export function GetBenchmarkSyncState(): $CancellablePromise<$models.BenchmarkSyncState> {
+    return $Call.ByID(2636766830);
 }
 
 /**
@@ -69,6 +93,14 @@ export function OpenModelBenchmark(id: string): $CancellablePromise<$models.Mode
     return $Call.ByID(2364498477, id);
 }
 
+export function RejectBenchmarkSyncPairing(requestID: string): $CancellablePromise<$models.BenchmarkSyncState> {
+    return $Call.ByID(2463881622, requestID);
+}
+
+export function RunBenchmarkSync(deviceID: string, direction: string): $CancellablePromise<$models.BenchmarkSyncState> {
+    return $Call.ByID(356619878, deviceID, direction);
+}
+
 /**
  * SaveBenchmarkExport writes a user-selected benchmark report.
  */
@@ -99,6 +131,14 @@ export function SaveNamedConnectionProfile(profile: $models.SavedConnectionProfi
     return $Call.ByID(3901251290, profile);
 }
 
+export function StartBenchmarkSyncPairing(address: string, code: string): $CancellablePromise<$models.BenchmarkSyncState> {
+    return $Call.ByID(4201909007, address, code);
+}
+
 export function StartChat(request: $models.ChatRequest): $CancellablePromise<void> {
     return $Call.ByID(1745474569, request);
+}
+
+export function UpdateBenchmarkSyncDeviceName(name: string): $CancellablePromise<$models.BenchmarkSyncState> {
+    return $Call.ByID(2030519413, name);
 }

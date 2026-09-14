@@ -162,6 +162,7 @@ export interface ModelBenchmarkSidebarState {
     caseCount: number;
     recent: ModelBenchmarkSummary[];
     imported: ModelBenchmarkSummary[];
+    synchronized: ModelBenchmarkSummary[];
     isHistoryLoading: boolean;
 }
 
@@ -564,6 +565,8 @@ function benchmarkSummary(benchmark: ModelBenchmark): ModelBenchmarkSummary {
     return {
         id: benchmark.id,
         imported: benchmark.imported,
+        source: benchmark.source || (benchmark.imported ? 'report' : 'local'),
+        originDeviceName: benchmark.originDeviceName,
         suiteName: benchmark.suiteName,
         model: benchmark.model,
         reasoningEffort: benchmark.reasoningEffort,
@@ -1218,8 +1221,9 @@ function ModelBenchmarkWorkspace({
             status: isRunning ? 'running' : 'idle',
             completedCaseCount: isRunning ? summary?.completedCaseCount || 0 : 0,
             caseCount: isRunning ? summary?.caseCount || 0 : 0,
-            recent: history.filter((item) => !item.imported).slice(0, 8),
-            imported: history.filter((item) => item.imported).slice(0, 8),
+            recent: history.filter((item) => item.source === 'local' || (!item.source && !item.imported)).slice(0, 8),
+            imported: history.filter((item) => item.source === 'report' || (!item.source && item.imported)).slice(0, 8),
+            synchronized: history.filter((item) => item.source === 'sync').slice(0, 8),
             isHistoryLoading: loadingHistory,
         });
     }, [benchmark, history, isRunning, loadingHistory, onSidebarChange]);
@@ -1233,6 +1237,7 @@ function ModelBenchmarkWorkspace({
         caseCount: 0,
         recent: [],
         imported: [],
+        synchronized: [],
         isHistoryLoading: false,
     }), [onSidebarChange]);
 

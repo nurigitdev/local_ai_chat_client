@@ -7,6 +7,10 @@ export {
 };
 
 export type {
+    BenchmarkSyncLog,
+    BenchmarkSyncPairRequest,
+    BenchmarkSyncPeer,
+    BenchmarkSyncState,
     ChatAttachment,
     ChatEvent,
     ChatMessage,
