@@ -612,6 +612,7 @@ function App() {
     const [benchmarkSidebar, setBenchmarkSidebar] = useState<ModelBenchmarkSidebarState>(emptyBenchmarkSidebar);
     const [syncSidebar, setSyncSidebar] = useState<BenchmarkSyncSidebarState>(emptyBenchmarkSyncSidebar);
     const [syncRefreshKey, setSyncRefreshKey] = useState(0);
+    const [syncMonitoringEnabled, setSyncMonitoringEnabled] = useState(false);
     const [syncSidebarError, setSyncSidebarError] = useState('');
     const [syncSidebarAction, setSyncSidebarAction] = useState('');
     const [benchmarkHistorySectionOpen, setBenchmarkHistorySectionOpen] = useState<BenchmarkHistorySectionOpenState>(loadBenchmarkHistorySectionOpenState);
@@ -728,6 +729,33 @@ function App() {
     const handleSyncSidebarChange = useCallback((nextState: BenchmarkSyncSidebarState) => {
         setSyncSidebar(nextState);
     }, []);
+
+    const openSyncWorkspace = useCallback(() => {
+        setSyncMonitoringEnabled(true);
+        setWorkspace('sync');
+        setConnectionSettingsOpen(false);
+    }, []);
+
+    useEffect(() => {
+        if (!syncMonitoringEnabled) return undefined;
+
+        let disposed = false;
+        const refreshIncomingRequests = async () => {
+            try {
+                const next = await ChatService.GetBenchmarkSyncState();
+                if (!disposed) setSyncSidebar(benchmarkSyncSidebarState(next));
+            } catch {
+                // Keep the last known request state when the local sync service is temporarily unavailable.
+            }
+        };
+
+        void refreshIncomingRequests();
+        const timer = window.setInterval(() => void refreshIncomingRequests(), 3_000);
+        return () => {
+            disposed = true;
+            window.clearInterval(timer);
+        };
+    }, [syncMonitoringEnabled]);
 
     const handleSyncPairingRequest = useCallback(async (requestID: string, decision: 'approve' | 'reject') => {
         if (syncSidebarAction) return;
@@ -1759,15 +1787,13 @@ function App() {
                         모델 실험실
                     </button>
                     <button
-                        className={workspace === 'sync' ? 'active' : ''}
+                        className={`sync-workspace-button ${workspace === 'sync' ? 'active' : ''}`}
                         type="button"
-                        onClick={() => {
-                            setWorkspace('sync');
-                            setConnectionSettingsOpen(false);
-                        }}
+                        onClick={openSyncWorkspace}
                         disabled={busy || benchmarkBusy}
                     >
-                        결과 동기화
+                        <span>결과 동기화</span>
+                        {syncSidebar.incomingRequests.length > 0 && <small className="workspace-sync-badge" aria-label={`받은 연결 요청 ${syncSidebar.incomingRequests.length}건`}>{syncSidebar.incomingRequests.length}</small>}
                     </button>
                 </nav>
 
@@ -2011,6 +2037,17 @@ function App() {
             >
                 <span aria-hidden="true">›</span>
             </button>
+
+            {workspace !== 'sync' && syncSidebar.incomingRequests.length > 0 && (
+                <section className="sync-request-notice" aria-live="polite">
+                    <div>
+                        <span>새 연결 요청 {syncSidebar.incomingRequests.length}건</span>
+                        <strong>{syncSidebar.incomingRequests[0].deviceName}{syncSidebar.incomingRequests.length > 1 ? ` 외 ${syncSidebar.incomingRequests.length - 1}대` : ''}</strong>
+                        <p>다른 PC에서 벤치마크 결과 동기화를 요청했습니다.</p>
+                    </div>
+                    <button className="primary-button" type="button" onClick={openSyncWorkspace}>확인하기</button>
+                </section>
+            )}
 
             {workspace === 'benchmark' ? (
                 <main className="benchmark-panel">

@@ -96,8 +96,6 @@ export default function BenchmarkSyncWorkspace({onBenchmarkHistoryChanged, onSid
         }
     }, [onSidebarChange, state]);
 
-    useEffect(() => () => onSidebarChange(emptyBenchmarkSyncSidebar), [onSidebarChange]);
-
     useEffect(() => {
         if (!(state?.outgoingRequests || []).some((request) => request.status === 'pending')) return undefined;
         const timer = window.setInterval(() => {
@@ -153,8 +151,7 @@ export default function BenchmarkSyncWorkspace({onBenchmarkHistoryChanged, onSid
     }
 
     const peers = state?.peers || [];
-    const incomingRequests = state?.incomingRequests || [];
-    const outgoingRequests = state?.outgoingRequests || [];
+    const incomingRequests = (state?.incomingRequests || []).filter((request) => request.status === 'pending');
     const logs = state?.logs || [];
 
     return (
@@ -165,12 +162,31 @@ export default function BenchmarkSyncWorkspace({onBenchmarkHistoryChanged, onSid
                     <h1>벤치마크 결과 동기화</h1>
                     <p>신뢰하는 같은 네트워크의 PC와 결과만 주고받습니다. API 키, 연결 설정, 대화 내용은 전송하지 않습니다.</p>
                 </div>
-                <button className="secondary-button" type="button" onClick={() => void refresh()} disabled={Boolean(busyAction)}>새로 고침</button>
             </header>
 
             <p className="benchmark-sync-warning">공용 네트워크에서는 사용하지 마세요. 처음 연결할 때 양쪽 PC에서 일회용 코드와 연결 요청을 확인합니다.</p>
             {error && <p className="form-error" role="alert">{error}</p>}
             {notice && <p className="form-notice">{notice}</p>}
+
+            {incomingRequests.length > 0 && <section className="benchmark-sync-card benchmark-sync-incoming" aria-label="받은 연결 요청">
+                <div className="benchmark-sync-card-heading">
+                    <div><span className="eyebrow">ACTION NEEDED</span><h2>받은 연결 요청 {incomingRequests.length}건</h2></div>
+                    <small>연결할 PC가 맞는지 확인한 뒤 승인해 주세요.</small>
+                </div>
+                {incomingRequests.map((request) => (
+                    <div className="benchmark-sync-incoming-item" key={request.requestID}>
+                        <div><strong>{request.deviceName}</strong><span>{request.address} · {formatTime(request.createdAt)}</span></div>
+                        {request.status === 'pending' ? <div className="benchmark-sync-actions">
+                            <button className="secondary-button" type="button" disabled={Boolean(busyAction)} onClick={() => void runAction(`reject-${request.requestID}`, () => ChatService.RejectBenchmarkSyncPairing(request.requestID))}>거절</button>
+                            <button className="primary-button" type="button" disabled={Boolean(busyAction)} onClick={() => void runAction(`approve-${request.requestID}`, async () => {
+                                const next = await ChatService.ApproveBenchmarkSyncPairing(request.requestID);
+                                setNotice(`${request.deviceName} PC를 연결했습니다.`);
+                                return next;
+                            })}>승인</button>
+                        </div> : <small>{request.status === 'accepted' ? '승인됨' : '거절됨'}</small>}
+                    </div>
+                ))}
+            </section>}
 
             <section className="benchmark-sync-grid" aria-label="동기화 연결 설정">
                 <section className="benchmark-sync-card">
@@ -228,36 +244,8 @@ export default function BenchmarkSyncWorkspace({onBenchmarkHistoryChanged, onSid
                         </label>
                         <button className="primary-button" type="submit" disabled={Boolean(busyAction) || !address.trim() || !code.trim()}>연결 요청 보내기</button>
                     </form>
-                    {outgoingRequests.length > 0 && <div className="benchmark-sync-request-list">
-                        {outgoingRequests.slice(0, 3).map((request) => (
-                            <p key={request.requestID} className={`benchmark-sync-request ${request.status}`}>
-                                <strong>{request.deviceName || request.address}</strong>
-                                <span>{request.status === 'pending' ? '승인 대기 중' : request.status === 'accepted' ? '연결됨' : request.status === 'rejected' ? '거절됨' : '확인 실패'}</span>
-                            </p>
-                        ))}
-                    </div>}
                 </section>
             </section>
-
-            {incomingRequests.length > 0 && <section className="benchmark-sync-card benchmark-sync-incoming">
-                <div className="benchmark-sync-card-heading">
-                    <div><span className="eyebrow">PENDING</span><h2>받은 연결 요청</h2></div>
-                    <small>연결할 PC가 맞는지 확인한 뒤 승인해 주세요.</small>
-                </div>
-                {incomingRequests.map((request) => (
-                    <div className="benchmark-sync-incoming-item" key={request.requestID}>
-                        <div><strong>{request.deviceName}</strong><span>{request.address} · {formatTime(request.createdAt)}</span></div>
-                        {request.status === 'pending' ? <div className="benchmark-sync-actions">
-                            <button className="secondary-button" type="button" disabled={Boolean(busyAction)} onClick={() => void runAction(`reject-${request.requestID}`, () => ChatService.RejectBenchmarkSyncPairing(request.requestID))}>거절</button>
-                            <button className="primary-button" type="button" disabled={Boolean(busyAction)} onClick={() => void runAction(`approve-${request.requestID}`, async () => {
-                                const next = await ChatService.ApproveBenchmarkSyncPairing(request.requestID);
-                                setNotice(`${request.deviceName} PC를 연결했습니다.`);
-                                return next;
-                            })}>승인</button>
-                        </div> : <small>{request.status === 'accepted' ? '승인됨' : '거절됨'}</small>}
-                    </div>
-                ))}
-            </section>}
 
             <section className="benchmark-sync-card benchmark-sync-peers">
                 <div className="benchmark-sync-card-heading">
