@@ -57,7 +57,7 @@ function syncLogSummary(log: BenchmarkSyncLog): string {
 function syncDirectionLabel(direction: string): string {
     if (direction === 'push') return '보내기';
     if (direction === 'pull') return '받기';
-    if (direction === 'bidirectional') return '양방향';
+    if (direction === 'bidirectional') return '동기화';
     if (direction === 'send') return '전송';
     if (direction === 'receive') return '수신';
     return direction;
@@ -275,9 +275,7 @@ function PeerRow({peer, busy, onSync, onDelete}: {peer: BenchmarkSyncPeer; busy:
     return <article className="benchmark-sync-peer">
         <div><strong>{peer.deviceName}</strong><span>{peer.address}</span><small>{formatTime(peer.connectedAt)}에 연결</small></div>
         <div className="benchmark-sync-actions">
-            <button className="secondary-button" type="button" disabled={busy} onClick={() => onSync('pull')}>받기</button>
-            <button className="secondary-button" type="button" disabled={busy} onClick={() => onSync('push')}>보내기</button>
-            <button className="primary-button" type="button" disabled={busy} onClick={() => onSync('bidirectional')}>양방향 동기화</button>
+            <button className="primary-button" type="button" disabled={busy} onClick={() => onSync('bidirectional')}>동기화</button>
             <button className="text-button danger" type="button" disabled={busy} onClick={onDelete}>연결 해제</button>
         </div>
     </article>;

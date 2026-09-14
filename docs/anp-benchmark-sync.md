@@ -33,7 +33,7 @@ ANP 저장소 기준으로 `did:wba`, Agent Description, Agent Discovery, 종단
 |---|---|---|
 | 연결·인증·HTTP 수신 | `benchmark_sync.go` | 일회용 코드 요청, 승인·거절, 장치별 인증, `records` 송수신 |
 | 기록 출처·병합 우선순위 | `model_benchmark_store.go`, `benchmark_report.go` | `local > report > sync`, 동일 원본 내용 충돌 보존 |
-| 동기화 작업 화면 | `frontend/src/BenchmarkSync.tsx` | 주소·코드 입력, 승인, 보내기·받기·양방향, 활동 기록 |
+| 동기화 작업 화면 | `frontend/src/BenchmarkSync.tsx` | 주소·코드 입력, 승인, 동기화, 활동 기록 |
 | 작업 공간·기록 목록 | `frontend/src/App.tsx`, `frontend/src/ModelBenchmark.tsx` | 세로 작업 공간 메뉴와 동기화된 벤치마크 목록 |
 
 ## 현재 범위와 보안 한계
