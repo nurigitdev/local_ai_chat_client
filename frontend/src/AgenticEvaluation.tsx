@@ -20,6 +20,7 @@ import {
 } from './reasoningEffort';
 
 const agenticEvaluationEventName = 'agentic-evaluation:event';
+const maxAgenticEvaluationRuns = 240;
 
 interface AgenticEvaluationWorkspaceProps {
     profiles: SavedConnectionProfile[];
@@ -37,6 +38,13 @@ type ModelAggregate = {
     actions: number;
     inputTokens: number;
     outputTokens: number;
+};
+
+type EnvironmentAggregate = {
+    environment: string;
+    total: number;
+    finished: number;
+    passed: number;
 };
 
 function formatTime(value?: string): string {
@@ -93,6 +101,18 @@ function aggregateByModel(runs: AgenticEvaluationRun[]): ModelAggregate[] {
     return Array.from(aggregate.values()).sort((left, right) => left.model.localeCompare(right.model));
 }
 
+function aggregateByEnvironment(runs: AgenticEvaluationRun[]): EnvironmentAggregate[] {
+    const aggregate = new Map<string, EnvironmentAggregate>();
+    for (const run of runs) {
+        const current = aggregate.get(run.environment) || {environment: run.environment, total: 0, finished: 0, passed: 0};
+        current.total += 1;
+        if (run.status !== 'pending' && run.status !== 'running') current.finished += 1;
+        if (run.result?.passed) current.passed += 1;
+        aggregate.set(run.environment, current);
+    }
+    return Array.from(aggregate.values()).sort((left, right) => left.environment.localeCompare(right.environment));
+}
+
 function groupScenarios(scenarios: AgenticEvaluationScenarioSummary[]) {
     return scenarios.reduce<Record<string, AgenticEvaluationScenarioSummary[]>>((groups, scenario) => {
         groups[scenario.environment] = [...(groups[scenario.environment] || []), scenario];
@@ -138,6 +158,8 @@ export default function AgenticEvaluationWorkspace({
     const scenarioGroups = useMemo(() => groupScenarios(scenarios), [scenarios]);
     const running = evaluation?.status === 'running';
     const reasoningWarning = reasoningEffortWarning(reasoningEffort);
+    const plannedRunCount = selectedModels.length * selectedScenarioIDs.length * repetitions;
+    const runCountOverLimit = plannedRunCount > maxAgenticEvaluationRuns;
 
     const refreshHistory = useCallback(async () => {
         try {
@@ -276,6 +298,7 @@ export default function AgenticEvaluationWorkspace({
             setEvaluation(started);
             setView('result');
             void refreshHistory();
+            void refreshEvaluation(started.id);
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : String(reason));
         } finally {
@@ -329,7 +352,8 @@ export default function AgenticEvaluationWorkspace({
                 <div>
                     <span>{run.environment} · {run.category}</span>
                     <strong>{run.title}</strong>
-                    <small>{run.model} · 변형 {run.variant + 1}</small>
+                    <small>{run.model} · 변형 {run.variant} · {run.scenarioID}@{run.scenarioVersion}</small>
+                    {run.initialStateHash && <small>초기 상태 {run.initialStateHash.slice(0, 12)} · 채점 {run.graderVersion}</small>}
                 </div>
                 <span className={`agentic-status ${run.status}`}>{runStatusText(run.status)}</span>
             </header>
@@ -375,6 +399,7 @@ export default function AgenticEvaluationWorkspace({
     if (view === 'result' && evaluation) {
         const runs = evaluation.runs || [];
         const aggregate = aggregateByModel(runs);
+        const environmentAggregate = aggregateByEnvironment(runs);
         const finishedRuns = runs.filter((run) => run.status !== 'pending' && run.status !== 'running').length;
         const passedRuns = runs.filter((run) => run.result?.passed).length;
         return <section className="agentic-page" aria-label="에이전트 실험 결과">
@@ -399,6 +424,13 @@ export default function AgenticEvaluationWorkspace({
             <section className="agentic-info-card">
                 <strong>실행 격리</strong>
                 <p>각 실행은 시나리오 원본에서 새 상태를 만들고, 허용된 가상 도구만 호출합니다. 실행이 끝나면 원본과 작업 사본은 폐기되고 행동 기록과 상태 차이만 보관됩니다.</p>
+                <div className="agentic-rule-list">
+                    <span>행동 {evaluation.executionRules.actionFormatVersion}</span>
+                    <span>지시 {evaluation.executionRules.systemPromptVersion}</span>
+                    <span>도구 {evaluation.executionRules.toolDefinitionVersion}</span>
+                    <span>채점 {evaluation.executionRules.graderVersion}</span>
+                    <span>최대 {evaluation.executionRules.maxActions} 행동 · {Math.floor(evaluation.executionRules.runTimeoutSeconds / 60)}분</span>
+                </div>
             </section>
             <section className="agentic-comparison-card">
                 <div className="agentic-card-heading"><div><span className="eyebrow">MODEL COMPARISON</span><h2>모델별 실행 요약</h2></div><small>같은 시나리오 변형을 각 모델에 순차 실행</small></div>
@@ -407,6 +439,9 @@ export default function AgenticEvaluationWorkspace({
                     {aggregate.map((item) => <div className="agentic-comparison-row" role="row" key={item.model}>
                         <strong title={item.model}>{item.model}</strong><span>{item.passed}/{item.total}</span><span>{item.finished}/{item.total}</span><span>{item.total ? (item.actions / item.total).toFixed(1) : '—'}</span><span>{item.inputTokens + item.outputTokens}</span>
                     </div>)}
+                </div>
+                <div className="agentic-environment-summary" aria-label="환경별 성공 현황">
+                    {environmentAggregate.map((item) => <article key={item.environment}><span>{item.environment}</span><strong>{item.passed}/{item.total}</strong><small>{item.finished}/{item.total} 완료</small></article>)}
                 </div>
             </section>
             <section className="agentic-runs-section">
@@ -456,12 +491,13 @@ export default function AgenticEvaluationWorkspace({
                 <label className="agentic-field"><span>시나리오당 반복</span><select value={repetitions} onChange={(event) => setRepetitions(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((count) => <option value={count} key={count}>{count}회</option>)}</select></label>
                 <label className="agentic-field"><span>추론 강도</span><select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}>{reasoningEffortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                 {reasoningWarning && <p className="agentic-warning">{reasoningWarning}</p>}
-                <p className="agentic-run-count">총 <strong>{selectedModels.length * selectedScenarioIDs.length * repetitions}</strong>회가 하나의 순차 대기열에서 실행됩니다.</p>
-                <button className="primary-button" type="button" onClick={() => void startEvaluation()} disabled={starting || !selectedProfile || selectedModels.length === 0 || selectedScenarioIDs.length === 0}>{starting ? '실험 준비 중…' : '에이전트 실험 시작'}</button>
+                <p className="agentic-run-count">총 <strong>{plannedRunCount}</strong>회가 하나의 순차 대기열에서 실행됩니다.</p>
+                <button className="primary-button" type="button" onClick={() => void startEvaluation()} disabled={starting || runCountOverLimit || !selectedProfile || selectedModels.length === 0 || selectedScenarioIDs.length === 0}>{starting ? '실험 준비 중…' : '에이전트 실험 시작'}</button>
+                {runCountOverLimit && <p className="agentic-warning">한 대기열은 최대 {maxAgenticEvaluationRuns}회까지 실행할 수 있습니다. 모델, 시나리오 또는 반복 횟수를 줄여 주세요.</p>}
             </article>
         </section>
         <section className="agentic-history-card">
-            <div className="agentic-card-heading"><div><span className="eyebrow">HISTORY</span><h2>저장된 실행</h2></div><small>{loadingHistory ? '불러오는 중…' : `${history.length}개`}</small></div>
+            <div className="agentic-card-heading"><div><span className="eyebrow">HISTORY</span><h2>저장된 실행</h2></div><small>{loadingHistory ? '불러오는 중…' : `${history.length}/80개`}</small></div>
             {history.length === 0 && !loadingHistory ? <p className="agentic-empty">아직 저장된 에이전트 실험이 없습니다.</p> : <div className="agentic-history-list">{history.map((record) => <article key={record.id}>
                 <button type="button" onClick={() => void openEvaluation(record.id)}><strong>{record.models?.join(', ') || '모델 없음'}</strong><span>{record.profileName} · 시나리오 {record.scenarioCount}개 · 반복 {record.repetitions}회</span><small>{evaluationStatusText(record.status)} · 통과 {record.passedRunCount}/{record.runCount} · {formatTime(record.updatedAt)}</small></button>
                 <button className="text-button danger" type="button" onClick={() => void deleteEvaluation(record.id)} disabled={record.status === 'running'}>삭제</button>

@@ -16,6 +16,7 @@ export type {
     AgenticEvaluationScenarioSummary,
     AgenticEvaluationStartRequest,
     AgenticEvaluationSummary,
+    AgenticExecutionRules,
     BenchmarkSyncLog,
     BenchmarkSyncPairRequest,
     BenchmarkSyncPeer,

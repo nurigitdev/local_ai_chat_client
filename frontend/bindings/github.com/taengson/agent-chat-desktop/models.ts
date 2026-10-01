@@ -10,6 +10,7 @@ export interface AgenticEvaluation {
     "scenarioIDs": string[] | null;
     "repetitions": number;
     "reasoningEffort"?: string;
+    "executionRules": AgenticExecutionRules;
     "status": string;
     "createdAt": string;
     "updatedAt": string;
@@ -55,6 +56,8 @@ export interface AgenticEvaluationRun {
     "model": string;
     "scenarioID": string;
     "scenarioVersion": string;
+    "initialStateHash"?: string;
+    "graderVersion": string;
     "environment": string;
     "category": string;
     "title": string;
@@ -108,6 +111,24 @@ export interface AgenticEvaluationSummary {
     "runCount": number;
     "finishedRunCount": number;
     "passedRunCount": number;
+}
+
+/**
+ * AgenticExecutionRules records the shared evaluation contract. It makes a
+ * stored result interpretable even after defaults evolve in a later release.
+ */
+export interface AgenticExecutionRules {
+    "actionFormatVersion": string;
+    "systemPromptVersion": string;
+    "toolDefinitionVersion": string;
+    "graderVersion": string;
+    "maxActions": number;
+    "maxInvalidActions": number;
+    "contextLimitBytes": number;
+    "responseLimitBytes": number;
+    "toolOutputLimitBytes": number;
+    "runTimeoutSeconds": number;
+    "actionTimeoutSeconds": number;
 }
 
 export interface BenchmarkSyncLog {

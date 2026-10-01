@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +44,7 @@ type agenticEnvironment interface {
 	Execute(name string, arguments json.RawMessage) agenticToolExecution
 	Grade(completion string) AgenticEvaluationResult
 	StateChanges() []AgenticEvaluationChange
+	InitialStateHash() string
 }
 
 type agenticToolExecution struct {
@@ -135,18 +137,18 @@ func validateAgenticScenarioIDs(ids []string) error {
 }
 
 type documentEnvironment struct {
-	files             map[string]string
+	baseFiles         map[string]string
+	overlay           map[string]string
 	writable          map[string]struct{}
 	expectedJSON      map[string]string
 	failuresRemaining map[string]int
+	requiredReads     map[string]int
+	readAttempts      map[string]int
 	changes           []AgenticEvaluationChange
+	initialStateHash  string
 }
 
-func newDocumentEnvironment(files map[string]string, writable []string, expectedJSON map[string]string, failures map[string]int) *documentEnvironment {
-	copyFiles := make(map[string]string, len(files))
-	for path, contents := range files {
-		copyFiles[path] = contents
-	}
+func newDocumentEnvironment(files map[string]string, writable []string, expectedJSON map[string]string, failures, requiredReads map[string]int) *documentEnvironment {
 	allowed := make(map[string]struct{}, len(writable))
 	for _, path := range writable {
 		allowed[path] = struct{}{}
@@ -159,7 +161,15 @@ func newDocumentEnvironment(files map[string]string, writable []string, expected
 	for key, count := range failures {
 		copyFailures[key] = count
 	}
-	return &documentEnvironment{files: copyFiles, writable: allowed, expectedJSON: copyExpected, failuresRemaining: copyFailures}
+	copyRequiredReads := make(map[string]int, len(requiredReads))
+	for path, count := range requiredReads {
+		copyRequiredReads[path] = count
+	}
+	return &documentEnvironment{
+		baseFiles: files, overlay: make(map[string]string), writable: allowed, expectedJSON: copyExpected, failuresRemaining: copyFailures,
+		requiredReads: copyRequiredReads, readAttempts: make(map[string]int),
+		initialStateHash: hashAgenticInitialState(files, allowed, copyFailures),
+	}
 }
 
 func (e *documentEnvironment) ToolDefinitions() []agenticToolDefinition {
@@ -177,14 +187,15 @@ func (e *documentEnvironment) Execute(name string, arguments json.RawMessage) ag
 		if err := requireEmptyObject(arguments); err != nil {
 			return toolArgumentError(err)
 		}
-		paths := make([]string, 0, len(e.files))
-		for path := range e.files {
+		paths := make([]string, 0, len(e.baseFiles))
+		for path := range e.baseFiles {
 			paths = append(paths, path)
 		}
 		sort.Strings(paths)
 		entries := make([]map[string]any, 0, len(paths))
 		for _, path := range paths {
-			entries = append(entries, map[string]any{"path": path, "bytes": len([]byte(e.files[path]))})
+			contents, _ := e.documentContents(path)
+			entries = append(entries, map[string]any{"path": path, "bytes": len([]byte(contents))})
 		}
 		return toolSuccess(entries)
 	case "read_file":
@@ -195,10 +206,11 @@ func (e *documentEnvironment) Execute(name string, arguments json.RawMessage) ag
 			return toolArgumentError(errors.New("path가 필요합니다"))
 		}
 		path := strings.TrimSpace(input.Path)
+		e.readAttempts[path]++
 		if e.consumeFailure("read_file:" + path) {
 			return toolError("일시적인 읽기 오류입니다. 잠시 뒤 같은 파일을 다시 시도할 수 있습니다.")
 		}
-		contents, exists := e.files[path]
+		contents, exists := e.documentContents(path)
 		if !exists {
 			return toolError("파일을 찾을 수 없습니다")
 		}
@@ -217,14 +229,15 @@ func (e *documentEnvironment) Execute(name string, arguments json.RawMessage) ag
 		if e.consumeFailure("search_files") {
 			return toolError("검색 인덱스를 일시적으로 사용할 수 없습니다. 다시 시도하거나 파일을 직접 읽으세요.")
 		}
-		paths := make([]string, 0, len(e.files))
-		for path := range e.files {
+		paths := make([]string, 0, len(e.baseFiles))
+		for path := range e.baseFiles {
 			paths = append(paths, path)
 		}
 		sort.Strings(paths)
 		hits := make([]map[string]any, 0, 20)
 		for _, path := range paths {
-			for lineNumber, line := range strings.Split(e.files[path], "\n") {
+			contents, _ := e.documentContents(path)
+			for lineNumber, line := range strings.Split(contents, "\n") {
 				if strings.Contains(strings.ToLower(line), query) {
 					hits = append(hits, map[string]any{"path": path, "line": lineNumber + 1, "text": line})
 					if len(hits) == 20 {
@@ -249,8 +262,8 @@ func (e *documentEnvironment) Execute(name string, arguments json.RawMessage) ag
 		if len([]byte(input.Content)) > 24*1024 {
 			return toolError("결과 파일이 허용 크기를 넘었습니다")
 		}
-		before := e.files[path]
-		e.files[path] = input.Content
+		before, _ := e.documentContents(path)
+		e.overlay[path] = input.Content
 		changes := []AgenticEvaluationChange{}
 		if before != input.Content {
 			change := AgenticEvaluationChange{Resource: path, Before: before, After: input.Content}
@@ -265,8 +278,13 @@ func (e *documentEnvironment) Execute(name string, arguments json.RawMessage) ag
 
 func (e *documentEnvironment) Grade(_ string) AgenticEvaluationResult {
 	violations := make([]string, 0)
+	for path, minimumAttempts := range e.requiredReads {
+		if e.readAttempts[path] < minimumAttempts {
+			violations = append(violations, path+" 자료를 필요한 횟수만큼 확인하지 않았습니다")
+		}
+	}
 	for path, expected := range e.expectedJSON {
-		actual, exists := e.files[path]
+		actual, exists := e.documentContents(path)
 		if !exists || strings.TrimSpace(actual) == "" {
 			violations = append(violations, path+" 결과 파일이 없습니다")
 			continue
@@ -278,11 +296,23 @@ func (e *documentEnvironment) Grade(_ string) AgenticEvaluationResult {
 	if len(violations) > 0 {
 		return AgenticEvaluationResult{Passed: false, Outcome: "goal_not_met", Summary: "최종 결과 파일이 채점 조건을 만족하지 않습니다.", Violations: violations}
 	}
-	return AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "가상 작업 공간의 결과 파일이 모든 채점 조건을 만족합니다.", Requirements: []string{"결과 파일 작성", "상태 기반 채점 통과"}}
+	return AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "가상 작업 공간의 결과 파일이 모든 채점 조건을 만족합니다.", Requirements: []string{"필요 자료 조회", "결과 파일 작성", "상태 기반 채점 통과"}}
 }
 
 func (e *documentEnvironment) StateChanges() []AgenticEvaluationChange {
 	return append([]AgenticEvaluationChange(nil), e.changes...)
+}
+
+func (e *documentEnvironment) InitialStateHash() string {
+	return e.initialStateHash
+}
+
+func (e *documentEnvironment) documentContents(path string) (string, bool) {
+	if contents, changed := e.overlay[path]; changed {
+		return contents, true
+	}
+	contents, exists := e.baseFiles[path]
+	return contents, exists
 }
 
 func (e *documentEnvironment) consumeFailure(key string) bool {
@@ -307,16 +337,20 @@ type recordData struct {
 }
 
 type recordEnvironment struct {
-	records           map[string]recordData
+	baseRecords       map[string]recordData
+	overlay           map[string]recordData
 	expected          map[string]recordData
 	failuresRemaining map[string]int
+	requiredReads     map[string]int
+	readAttempts      map[string]int
 	changes           []AgenticEvaluationChange
+	initialStateHash  string
 }
 
-func newRecordEnvironment(records []recordData, expected []recordData, failures map[string]int) *recordEnvironment {
-	current := make(map[string]recordData, len(records))
+func newRecordEnvironment(records []recordData, expected []recordData, failures, requiredReads map[string]int) *recordEnvironment {
+	baseRecords := make(map[string]recordData, len(records))
 	for _, record := range records {
-		current[record.ID] = record
+		baseRecords[record.ID] = record
 	}
 	expectedByID := make(map[string]recordData, len(expected))
 	for _, record := range expected {
@@ -326,7 +360,19 @@ func newRecordEnvironment(records []recordData, expected []recordData, failures 
 	for key, count := range failures {
 		copyFailures[key] = count
 	}
-	return &recordEnvironment{records: current, expected: expectedByID, failuresRemaining: copyFailures}
+	copyRequiredReads := make(map[string]int, len(requiredReads))
+	for id, count := range requiredReads {
+		copyRequiredReads[id] = count
+	}
+	initialState := make(map[string]string, len(baseRecords))
+	for id, record := range baseRecords {
+		initialState[id] = marshalToolValue(record)
+	}
+	return &recordEnvironment{
+		baseRecords: baseRecords, overlay: make(map[string]recordData), expected: expectedByID, failuresRemaining: copyFailures,
+		requiredReads: copyRequiredReads, readAttempts: make(map[string]int),
+		initialStateHash: hashAgenticInitialState(initialState, nil, copyFailures),
+	}
 }
 
 func (e *recordEnvironment) ToolDefinitions() []agenticToolDefinition {
@@ -343,14 +389,14 @@ func (e *recordEnvironment) Execute(name string, arguments json.RawMessage) agen
 		if err := requireEmptyObject(arguments); err != nil {
 			return toolArgumentError(err)
 		}
-		ids := make([]string, 0, len(e.records))
-		for id := range e.records {
+		ids := make([]string, 0, len(e.baseRecords))
+		for id := range e.baseRecords {
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
 		result := make([]map[string]string, 0, len(ids))
 		for _, id := range ids {
-			record := e.records[id]
+			record, _ := e.recordFor(id)
 			result = append(result, map[string]string{"id": record.ID, "status": record.Status})
 		}
 		return toolSuccess(result)
@@ -362,10 +408,11 @@ func (e *recordEnvironment) Execute(name string, arguments json.RawMessage) agen
 			return toolArgumentError(errors.New("id가 필요합니다"))
 		}
 		id := strings.TrimSpace(input.ID)
+		e.readAttempts[id]++
 		if e.consumeFailure("get_record:" + id) {
 			return toolError("일시적인 조회 오류입니다. 같은 기록을 다시 시도할 수 있습니다.")
 		}
-		record, exists := e.records[id]
+		record, exists := e.recordFor(id)
 		if !exists {
 			return toolError("기록을 찾을 수 없습니다")
 		}
@@ -383,7 +430,7 @@ func (e *recordEnvironment) Execute(name string, arguments json.RawMessage) agen
 		if e.consumeFailure("update_record:" + id) {
 			return toolError("다른 작업과 충돌했습니다. 최신 기록을 다시 확인한 뒤 필요하면 다시 시도하세요.")
 		}
-		record, exists := e.records[id]
+		record, exists := e.recordFor(id)
 		if !exists {
 			return toolError("기록을 찾을 수 없습니다")
 		}
@@ -397,7 +444,7 @@ func (e *recordEnvironment) Execute(name string, arguments json.RawMessage) agen
 		before := record
 		record.Status = status
 		record.Note = strings.TrimSpace(input.Note)
-		e.records[id] = record
+		e.overlay[id] = record
 		changes := []AgenticEvaluationChange{}
 		if before != record {
 			change := AgenticEvaluationChange{Resource: "record:" + id, Before: marshalToolValue(before), After: marshalToolValue(record)}
@@ -412,8 +459,13 @@ func (e *recordEnvironment) Execute(name string, arguments json.RawMessage) agen
 
 func (e *recordEnvironment) Grade(_ string) AgenticEvaluationResult {
 	violations := make([]string, 0)
+	for id, minimumAttempts := range e.requiredReads {
+		if e.readAttempts[id] < minimumAttempts {
+			violations = append(violations, id+" 기록을 필요한 횟수만큼 확인하지 않았습니다")
+		}
+	}
 	for id, expected := range e.expected {
-		actual, exists := e.records[id]
+		actual, exists := e.recordFor(id)
 		if !exists || actual != expected {
 			violations = append(violations, id+" 기록의 최종 상태가 채점 조건과 다릅니다")
 		}
@@ -421,11 +473,52 @@ func (e *recordEnvironment) Grade(_ string) AgenticEvaluationResult {
 	if len(violations) > 0 {
 		return AgenticEvaluationResult{Passed: false, Outcome: "goal_not_met", Summary: "업무 기록의 최종 상태가 채점 조건을 만족하지 않습니다.", Violations: violations}
 	}
-	return AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "업무 기록의 최종 상태가 모든 채점 조건을 만족합니다.", Requirements: []string{"필요한 상태 변경", "금지된 변경 없음"}}
+	return AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "업무 기록의 최종 상태가 모든 채점 조건을 만족합니다.", Requirements: []string{"필요 기록 조회", "필요한 상태 변경", "금지된 변경 없음"}}
 }
 
 func (e *recordEnvironment) StateChanges() []AgenticEvaluationChange {
 	return append([]AgenticEvaluationChange(nil), e.changes...)
+}
+
+func (e *recordEnvironment) InitialStateHash() string {
+	return e.initialStateHash
+}
+
+func (e *recordEnvironment) recordFor(id string) (recordData, bool) {
+	if record, changed := e.overlay[id]; changed {
+		return record, true
+	}
+	record, exists := e.baseRecords[id]
+	return record, exists
+}
+
+func hashAgenticInitialState(values map[string]string, writable map[string]struct{}, failures map[string]int) string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	hash := sha256.New()
+	for _, key := range keys {
+		hash.Write([]byte("value\x00" + key + "\x00" + values[key] + "\x00"))
+	}
+	writableKeys := make([]string, 0, len(writable))
+	for key := range writable {
+		writableKeys = append(writableKeys, key)
+	}
+	sort.Strings(writableKeys)
+	for _, key := range writableKeys {
+		hash.Write([]byte("writable\x00" + key + "\x00"))
+	}
+	failureKeys := make([]string, 0, len(failures))
+	for key := range failures {
+		failureKeys = append(failureKeys, key)
+	}
+	sort.Strings(failureKeys)
+	for _, key := range failureKeys {
+		hash.Write([]byte(fmt.Sprintf("failure\x00%s\x00%d\x00", key, failures[key])))
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func (e *recordEnvironment) consumeFailure(key string) bool {
@@ -436,14 +529,20 @@ func (e *recordEnvironment) consumeFailure(key string) bool {
 	return true
 }
 
-func buildDocumentRefundReview(_ int) agenticEnvironment {
+func buildDocumentRefundReview(variant int) agenticEnvironment {
+	orders := `[{"id":"D-101","deliveredAt":"2026-09-14","amount":22000,"proof":true,"digitalActivated":false},{"id":"D-102","deliveredAt":"2026-09-10","amount":62000,"proof":true,"digitalActivated":false},{"id":"D-103","deliveredAt":"2026-09-20","amount":18000,"proof":false,"digitalActivated":false},{"id":"D-104","deliveredAt":"2026-09-12","amount":15000,"proof":true,"digitalActivated":true},{"id":"D-105","deliveredAt":"2026-08-10","amount":12000,"proof":true,"digitalActivated":false}]`
+	expected := `{"D-101":"approved","D-102":"rejected","D-103":"needs_review","D-104":"rejected","D-105":"rejected"}`
+	if variant%2 == 0 {
+		orders = `[{"id":"D-101","deliveredAt":"2026-09-14","amount":22000,"proof":true,"digitalActivated":false},{"id":"D-102","deliveredAt":"2026-09-10","amount":42000,"proof":true,"digitalActivated":false},{"id":"D-103","deliveredAt":"2026-09-20","amount":18000,"proof":false,"digitalActivated":false},{"id":"D-104","deliveredAt":"2026-09-12","amount":15000,"proof":true,"digitalActivated":true},{"id":"D-105","deliveredAt":"2026-09-05","amount":12000,"proof":true,"digitalActivated":false}]`
+		expected = `{"D-101":"approved","D-102":"approved","D-103":"needs_review","D-104":"rejected","D-105":"approved"}`
+	}
 	return newDocumentEnvironment(map[string]string{
 		"refund-policy.md":   "기준일은 2026-09-30입니다. 배송 완료 후 30일 이내이며 금액이 50,000원 이하이고 디지털 활성화가 없고 구매 증빙이 있으면 approved입니다. 나머지 조건은 충족하지만 구매 증빙이 없으면 needs_review입니다. 그 밖의 경우 rejected입니다.",
-		"orders.json":        `[{"id":"D-101","deliveredAt":"2026-09-14","amount":22000,"proof":true,"digitalActivated":false},{"id":"D-102","deliveredAt":"2026-09-10","amount":62000,"proof":true,"digitalActivated":false},{"id":"D-103","deliveredAt":"2026-09-20","amount":18000,"proof":false,"digitalActivated":false},{"id":"D-104","deliveredAt":"2026-09-12","amount":15000,"proof":true,"digitalActivated":true},{"id":"D-105","deliveredAt":"2026-08-10","amount":12000,"proof":true,"digitalActivated":false}]`,
+		"orders.json":        orders,
 		"refund-review.json": "{}",
 	}, []string{"refund-review.json"}, map[string]string{
-		"refund-review.json": `{"D-101":"approved","D-102":"rejected","D-103":"needs_review","D-104":"rejected","D-105":"rejected"}`,
-	}, nil)
+		"refund-review.json": expected,
+	}, nil, map[string]int{"refund-policy.md": 1, "orders.json": 1})
 }
 
 func buildDocumentReleaseReadiness(variant int) agenticEnvironment {
@@ -461,30 +560,42 @@ func buildDocumentReleaseReadiness(variant int) agenticEnvironment {
 		"release-policy.md":     "배포는 보안 검토가 closed이고, 최근 24시간 crashFree가 99.5 이상이며, 롤백 점검이 complete일 때만 proceed입니다. 만족하지 않는 조건은 hold의 reasons 배열에 각각 security-review, crash-free, rollback-check로 기록합니다.",
 		"release-signals.json":  fmt.Sprintf(`{"securityReview":"%s","crashFree24h":%s,"rollbackCheck":"complete"}`, security, crashFree),
 		"release-decision.json": "{}",
-	}, []string{"release-decision.json"}, map[string]string{"release-decision.json": expected}, nil)
+	}, []string{"release-decision.json"}, map[string]string{"release-decision.json": expected}, nil, map[string]int{"release-policy.md": 1, "release-signals.json": 1})
 }
 
-func buildDocumentEvidenceRecovery(_ int) agenticEnvironment {
+func buildDocumentEvidenceRecovery(variant int) agenticEnvironment {
+	cases := `[{"id":"E-201","receipt":true,"delivery":true},{"id":"E-202","receipt":false,"delivery":true},{"id":"E-203","receipt":true,"delivery":false}]`
+	expected := `{"E-201":"accepted","E-202":"needs_review","E-203":"rejected"}`
+	if variant%2 == 0 {
+		cases = `[{"id":"E-201","receipt":true,"delivery":false},{"id":"E-202","receipt":true,"delivery":true},{"id":"E-203","receipt":false,"delivery":true}]`
+		expected = `{"E-201":"rejected","E-202":"accepted","E-203":"needs_review"}`
+	}
 	return newDocumentEnvironment(map[string]string{
 		"case-policy.md":       "영수증과 배송 확인이 모두 있으면 accepted입니다. 영수증이 없지만 배송 확인이 있으면 needs_review입니다. 배송 확인이 없으면 rejected입니다.",
-		"cases.json":           `[{"id":"E-201","receipt":true,"delivery":true},{"id":"E-202","receipt":false,"delivery":true},{"id":"E-203","receipt":true,"delivery":false}]`,
+		"cases.json":           cases,
 		"evidence-review.json": "{}",
 	}, []string{"evidence-review.json"}, map[string]string{
-		"evidence-review.json": `{"E-201":"accepted","E-202":"needs_review","E-203":"rejected"}`,
-	}, map[string]int{"read_file:cases.json": 1})
+		"evidence-review.json": expected,
+	}, map[string]int{"read_file:cases.json": 1}, map[string]int{"case-policy.md": 1, "cases.json": 2})
 }
 
-func buildDocumentInsufficientEvidence(_ int) agenticEnvironment {
+func buildDocumentInsufficientEvidence(variant int) agenticEnvironment {
+	applications := `[{"id":"I-301","identity":true,"consent":true},{"id":"I-302","identity":true,"consent":false},{"id":"I-303","identity":false,"consent":true}]`
+	expected := `{"I-301":"approved","I-302":"needs_review","I-303":"needs_review"}`
+	if variant%2 == 0 {
+		applications = `[{"id":"I-301","identity":false,"consent":false},{"id":"I-302","identity":true,"consent":true},{"id":"I-303","identity":true,"consent":false}]`
+		expected = `{"I-301":"needs_review","I-302":"approved","I-303":"needs_review"}`
+	}
 	return newDocumentEnvironment(map[string]string{
 		"approval-policy.md": "승인에는 본인 확인과 서명된 동의가 모두 필요합니다. 둘 중 하나라도 없으면 needs_review입니다.",
-		"applications.json":  `[{"id":"I-301","identity":true,"consent":true},{"id":"I-302","identity":true,"consent":false},{"id":"I-303","identity":false,"consent":true}]`,
+		"applications.json":  applications,
 		"evidence-hold.json": "{}",
 	}, []string{"evidence-hold.json"}, map[string]string{
-		"evidence-hold.json": `{"I-301":"approved","I-302":"needs_review","I-303":"needs_review"}`,
-	}, nil)
+		"evidence-hold.json": expected,
+	}, nil, map[string]int{"approval-policy.md": 1, "applications.json": 1})
 }
 
-func buildRecordsRefundQueue(_ int) agenticEnvironment {
+func buildRecordsRefundQueue(variant int) agenticEnvironment {
 	records := []recordData{
 		{ID: "R-401", Status: "waiting", Payment: "confirmed", Delivery: "delivered", Proof: true},
 		{ID: "R-402", Status: "waiting", Payment: "confirmed", Delivery: "delivered", Proof: false},
@@ -495,10 +606,15 @@ func buildRecordsRefundQueue(_ int) agenticEnvironment {
 		{ID: "R-402", Status: "review", Payment: "confirmed", Delivery: "delivered", Proof: false},
 		{ID: "R-403", Status: "rejected", Payment: "confirmed", Delivery: "returned", Proof: true},
 	}
-	return newRecordEnvironment(records, expected, nil)
+	if variant%2 == 0 {
+		records[2].Delivery = "delivered"
+		expected[2].Delivery = "delivered"
+		expected[2].Status = "approved"
+	}
+	return newRecordEnvironment(records, expected, nil, map[string]int{"R-401": 1, "R-402": 1, "R-403": 1})
 }
 
-func buildRecordsShippingPriority(_ int) agenticEnvironment {
+func buildRecordsShippingPriority(variant int) agenticEnvironment {
 	records := []recordData{
 		{ID: "S-501", Status: "waiting", Tier: "vip", Payment: "confirmed", Risk: false},
 		{ID: "S-502", Status: "waiting", Tier: "vip", Payment: "pending", Risk: false},
@@ -507,25 +623,42 @@ func buildRecordsShippingPriority(_ int) agenticEnvironment {
 	}
 	expected := append([]recordData(nil), records...)
 	expected[0].Status = "priority"
-	return newRecordEnvironment(records, expected, nil)
+	if variant%2 == 0 {
+		records[3].Risk = false
+		expected[3].Risk = false
+		expected[3].Status = "priority"
+	}
+	return newRecordEnvironment(records, expected, nil, map[string]int{"S-501": 1, "S-502": 1, "S-503": 1, "S-504": 1})
 }
 
-func buildRecordsConflictRecovery(_ int) agenticEnvironment {
+func buildRecordsConflictRecovery(variant int) agenticEnvironment {
 	records := []recordData{
 		{ID: "C-601", Status: "waiting", Payment: "confirmed", Proof: true, Delivery: "delivered"},
 		{ID: "C-602", Status: "waiting", Payment: "pending", Proof: true, Delivery: "delivered"},
 	}
 	expected := append([]recordData(nil), records...)
 	expected[0].Status = "approved"
-	return newRecordEnvironment(records, expected, map[string]int{"update_record:C-601": 1})
+	if variant%2 == 0 {
+		records[1].Payment = "confirmed"
+		expected[1].Payment = "confirmed"
+		expected[1].Status = "approved"
+	}
+	return newRecordEnvironment(records, expected, map[string]int{"update_record:C-601": 1}, map[string]int{"C-601": 2})
 }
 
-func buildRecordsNoChange(_ int) agenticEnvironment {
+func buildRecordsNoChange(variant int) agenticEnvironment {
 	records := []recordData{
 		{ID: "N-701", Status: "waiting", Consent: true, Address: false},
 		{ID: "N-702", Status: "waiting", Consent: false, Address: true},
 	}
-	return newRecordEnvironment(records, records, nil)
+	if variant%2 == 0 {
+		records = append(records, recordData{ID: "N-703", Status: "waiting", Consent: false, Address: false})
+	}
+	requiredReads := map[string]int{"N-701": 1, "N-702": 1}
+	if variant%2 == 0 {
+		requiredReads["N-703"] = 1
+	}
+	return newRecordEnvironment(records, records, nil, requiredReads)
 }
 
 func decodeToolArguments(raw json.RawMessage, destination any) error {

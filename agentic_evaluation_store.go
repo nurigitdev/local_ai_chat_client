@@ -13,7 +13,11 @@ import (
 	"time"
 )
 
-const agenticEvaluationDirectory = "agentic-evaluations"
+const (
+	agenticEvaluationDirectory      = "agentic-evaluations"
+	maxStoredAgenticEvaluations     = 80
+	maxAgenticEvaluationRecordBytes = 64 * 1024 * 1024
+)
 
 var agenticEvaluationMarker = regexp.MustCompile(`(?m)^<!-- agent-chat-agentic-evaluation (\{.*\}) -->$`)
 
@@ -39,31 +43,50 @@ type AgenticEvaluation struct {
 	ScenarioIDs     []string               `json:"scenarioIDs"`
 	Repetitions     int                    `json:"repetitions"`
 	ReasoningEffort string                 `json:"reasoningEffort,omitempty"`
+	ExecutionRules  AgenticExecutionRules  `json:"executionRules"`
 	Status          string                 `json:"status"`
 	CreatedAt       string                 `json:"createdAt"`
 	UpdatedAt       string                 `json:"updatedAt"`
 	Runs            []AgenticEvaluationRun `json:"runs"`
 }
 
+// AgenticExecutionRules records the shared evaluation contract. It makes a
+// stored result interpretable even after defaults evolve in a later release.
+type AgenticExecutionRules struct {
+	ActionFormatVersion   string `json:"actionFormatVersion"`
+	SystemPromptVersion   string `json:"systemPromptVersion"`
+	ToolDefinitionVersion string `json:"toolDefinitionVersion"`
+	GraderVersion         string `json:"graderVersion"`
+	MaxActions            int    `json:"maxActions"`
+	MaxInvalidActions     int    `json:"maxInvalidActions"`
+	ContextLimitBytes     int    `json:"contextLimitBytes"`
+	ResponseLimitBytes    int    `json:"responseLimitBytes"`
+	ToolOutputLimitBytes  int    `json:"toolOutputLimitBytes"`
+	RunTimeoutSeconds     int    `json:"runTimeoutSeconds"`
+	ActionTimeoutSeconds  int    `json:"actionTimeoutSeconds"`
+}
+
 type AgenticEvaluationRun struct {
-	ID              string                    `json:"id"`
-	Model           string                    `json:"model"`
-	ScenarioID      string                    `json:"scenarioID"`
-	ScenarioVersion string                    `json:"scenarioVersion"`
-	Environment     string                    `json:"environment"`
-	Category        string                    `json:"category"`
-	Title           string                    `json:"title"`
-	Goal            string                    `json:"goal"`
-	Variant         int                       `json:"variant"`
-	Status          string                    `json:"status"`
-	StartedAt       string                    `json:"startedAt,omitempty"`
-	FinishedAt      string                    `json:"finishedAt,omitempty"`
-	Actions         []AgenticEvaluationAction `json:"actions"`
-	StateChanges    []AgenticEvaluationChange `json:"stateChanges,omitempty"`
-	Result          *AgenticEvaluationResult  `json:"result,omitempty"`
-	Usage           *TokenUsage               `json:"usage,omitempty"`
-	Metrics         *ResponseMetrics          `json:"metrics,omitempty"`
-	Error           string                    `json:"error,omitempty"`
+	ID               string                    `json:"id"`
+	Model            string                    `json:"model"`
+	ScenarioID       string                    `json:"scenarioID"`
+	ScenarioVersion  string                    `json:"scenarioVersion"`
+	InitialStateHash string                    `json:"initialStateHash,omitempty"`
+	GraderVersion    string                    `json:"graderVersion"`
+	Environment      string                    `json:"environment"`
+	Category         string                    `json:"category"`
+	Title            string                    `json:"title"`
+	Goal             string                    `json:"goal"`
+	Variant          int                       `json:"variant"`
+	Status           string                    `json:"status"`
+	StartedAt        string                    `json:"startedAt,omitempty"`
+	FinishedAt       string                    `json:"finishedAt,omitempty"`
+	Actions          []AgenticEvaluationAction `json:"actions"`
+	StateChanges     []AgenticEvaluationChange `json:"stateChanges,omitempty"`
+	Result           *AgenticEvaluationResult  `json:"result,omitempty"`
+	Usage            *TokenUsage               `json:"usage,omitempty"`
+	Metrics          *ResponseMetrics          `json:"metrics,omitempty"`
+	Error            string                    `json:"error,omitempty"`
 }
 
 type AgenticEvaluationAction struct {
@@ -127,6 +150,9 @@ func (s *agenticEvaluationStore) Create(evaluation AgenticEvaluation) (AgenticEv
 	evaluation.CreatedAt = now
 	evaluation.UpdatedAt = now
 	if err := validateAgenticEvaluation(evaluation); err != nil {
+		return AgenticEvaluation{}, err
+	}
+	if err := s.pruneCompletedLocked(); err != nil {
 		return AgenticEvaluation{}, err
 	}
 	if err := s.saveLocked(evaluation); err != nil {
@@ -230,6 +256,53 @@ func (s *agenticEvaluationStore) Delete(id string) error {
 	return nil
 }
 
+// pruneCompletedLocked retains bounded local history without touching a live
+// queue. A new record is created only after the oldest completed records have
+// been removed, so a full disk history cannot grow without limit.
+func (s *agenticEvaluationStore) pruneCompletedLocked() error {
+	directory, err := s.directory()
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("에이전트 실험 목록을 읽을 수 없습니다: %w", err)
+	}
+	type storedRecord struct {
+		path      string
+		updatedAt string
+	}
+	completed := make([]storedRecord, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+		path := filepath.Join(directory, entry.Name())
+		contents, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("에이전트 실험 기록을 읽을 수 없습니다: %w", readErr)
+		}
+		evaluation, parseErr := parseAgenticEvaluation(contents)
+		if parseErr != nil {
+			return fmt.Errorf("에이전트 실험 기록 %q의 형식이 올바르지 않습니다: %w", entry.Name(), parseErr)
+		}
+		if evaluation.Status != "running" {
+			completed = append(completed, storedRecord{path: path, updatedAt: evaluation.UpdatedAt})
+		}
+	}
+	removeCount := len(completed) - maxStoredAgenticEvaluations + 1
+	if removeCount <= 0 {
+		return nil
+	}
+	sort.Slice(completed, func(i, j int) bool { return completed[i].updatedAt < completed[j].updatedAt })
+	for _, record := range completed[:removeCount] {
+		if err := os.Remove(record.path); err != nil {
+			return fmt.Errorf("오래된 에이전트 실험 기록을 정리할 수 없습니다: %w", err)
+		}
+	}
+	return nil
+}
+
 // MarkInterrupted closes records that were still running when the application
 // stopped. Execution state lives only in memory, so continuing such a record
 // could accidentally mix a fresh model conversation with an old environment.
@@ -299,6 +372,9 @@ func (s *agenticEvaluationStore) saveLocked(evaluation AgenticEvaluation) error 
 	if err != nil {
 		return err
 	}
+	if len(contents) > maxAgenticEvaluationRecordBytes {
+		return fmt.Errorf("에이전트 실험 상세 기록이 %dMB 제한을 넘었습니다", maxAgenticEvaluationRecordBytes/(1024*1024))
+	}
 	temporary, err := os.CreateTemp(directory, ".agentic-evaluation-*")
 	if err != nil {
 		return fmt.Errorf("에이전트 실험 임시 파일을 만들 수 없습니다: %w", err)
@@ -328,6 +404,9 @@ func normalizeAgenticEvaluation(evaluation AgenticEvaluation) AgenticEvaluation 
 	evaluation.ProfileName = normalizeProfileName(evaluation.ProfileName)
 	evaluation.ProfileBaseURL = strings.TrimSpace(evaluation.ProfileBaseURL)
 	evaluation.ReasoningEffort = strings.TrimSpace(evaluation.ReasoningEffort)
+	if evaluation.ExecutionRules.ActionFormatVersion == "" {
+		evaluation.ExecutionRules = defaultAgenticExecutionRules()
+	}
 	evaluation.Status = strings.TrimSpace(evaluation.Status)
 	evaluation.ModelIDs = normalizeAgenticStrings(evaluation.ModelIDs)
 	evaluation.ScenarioIDs = normalizeAgenticStrings(evaluation.ScenarioIDs)
@@ -337,6 +416,11 @@ func normalizeAgenticEvaluation(evaluation AgenticEvaluation) AgenticEvaluation 
 		run.Model = strings.TrimSpace(run.Model)
 		run.ScenarioID = strings.TrimSpace(run.ScenarioID)
 		run.ScenarioVersion = strings.TrimSpace(run.ScenarioVersion)
+		run.InitialStateHash = strings.TrimSpace(run.InitialStateHash)
+		run.GraderVersion = strings.TrimSpace(run.GraderVersion)
+		if run.GraderVersion == "" {
+			run.GraderVersion = evaluation.ExecutionRules.GraderVersion
+		}
 		run.Environment = strings.TrimSpace(run.Environment)
 		run.Category = strings.TrimSpace(run.Category)
 		run.Title = strings.TrimSpace(run.Title)
@@ -397,18 +481,21 @@ func validateAgenticEvaluation(evaluation AgenticEvaluation) error {
 	if _, err := normalizeReasoningEffort(evaluation.ReasoningEffort); err != nil {
 		return err
 	}
+	if err := validateAgenticExecutionRules(evaluation.ExecutionRules); err != nil {
+		return err
+	}
 	if evaluation.Status != "running" && evaluation.Status != "completed" && evaluation.Status != "cancelled" {
 		return errors.New("올바르지 않은 에이전트 실험 상태입니다")
 	}
 	if evaluation.CreatedAt == "" || evaluation.UpdatedAt == "" {
 		return errors.New("에이전트 실험 시간이 없습니다")
 	}
-	if len(evaluation.Runs) < 1 || len(evaluation.Runs) > 1_440 {
+	if len(evaluation.Runs) < 1 || len(evaluation.Runs) > maxAgenticEvaluationRuns {
 		return errors.New("올바르지 않은 에이전트 실행 목록입니다")
 	}
 	seenRunIDs := make(map[string]struct{}, len(evaluation.Runs))
 	for _, run := range evaluation.Runs {
-		if !isSafeConversationID(run.ID) || run.Model == "" || run.ScenarioID == "" || run.ScenarioVersion == "" || run.Environment == "" || run.Title == "" || run.Goal == "" {
+		if !isSafeConversationID(run.ID) || run.Model == "" || run.ScenarioID == "" || run.ScenarioVersion == "" || run.GraderVersion == "" || run.Environment == "" || run.Title == "" || run.Goal == "" {
 			return errors.New("올바르지 않은 에이전트 실행 기록입니다")
 		}
 		if _, exists := seenRunIDs[run.ID]; exists {

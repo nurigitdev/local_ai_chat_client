@@ -229,6 +229,7 @@ type App struct {
 	profiles           *connectionProfileStore
 	benchmarks         *modelBenchmarkStore
 	agenticEvaluations *agenticEvaluationStore
+	agenticActiveID    string
 	sync               *benchmarkSyncStore
 	eventSink          func(ChatEvent)
 	agenticEventSink   func(AgenticEvaluationEvent)

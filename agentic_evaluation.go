@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -15,13 +16,18 @@ import (
 const agenticEvaluationEventName = "agentic-evaluation:event"
 
 const (
-	maxAgenticActions         = 12
-	maxAgenticInvalidActions  = 2
-	maxAgenticContextBytes    = 96 * 1024
-	maxAgenticResponseBytes   = 32 * 1024
-	maxAgenticToolOutputBytes = 16 * 1024
-	agenticEvaluationTimeout  = 10 * time.Minute
-	agenticActionTimeout      = 2 * time.Minute
+	agenticActionFormatVersion   = "json-action-v1"
+	agenticSystemPromptVersion   = "2026-10-01"
+	agenticToolDefinitionVersion = "virtual-tools-v1"
+	agenticGraderVersion         = "state-grader-v1"
+	maxAgenticEvaluationRuns     = 240
+	maxAgenticActions            = 12
+	maxAgenticInvalidActions     = 2
+	maxAgenticContextBytes       = 96 * 1024
+	maxAgenticResponseBytes      = 32 * 1024
+	maxAgenticToolOutputBytes    = 16 * 1024
+	agenticEvaluationTimeout     = 10 * time.Minute
+	agenticActionTimeout         = 2 * time.Minute
 )
 
 type AgenticEvaluationEvent struct {
@@ -97,6 +103,9 @@ func (a *App) StartAgenticEvaluation(request AgenticEvaluationStartRequest) (Age
 	}
 
 	runs := makeAgenticEvaluationRuns(request.ModelIDs, request.ScenarioIDs, request.Repetitions)
+	if len(runs) > maxAgenticEvaluationRuns {
+		return AgenticEvaluation{}, fmt.Errorf("한 실험은 최대 %d회 실행할 수 있습니다", maxAgenticEvaluationRuns)
+	}
 	evaluation := AgenticEvaluation{
 		ID:              newConversationID(),
 		ProfileID:       request.ProfileID,
@@ -106,17 +115,18 @@ func (a *App) StartAgenticEvaluation(request AgenticEvaluationStartRequest) (Age
 		ScenarioIDs:     request.ScenarioIDs,
 		Repetitions:     request.Repetitions,
 		ReasoningEffort: reasoningEffort,
+		ExecutionRules:  defaultAgenticExecutionRules(),
 		Status:          "running",
 		Runs:            runs,
 	}
 	ctx, cancel := context.WithCancel(a.applicationContext())
-	if err := a.storeCancel(evaluation.ID, cancel); err != nil {
+	if err := a.reserveAgenticEvaluation(evaluation.ID, cancel); err != nil {
 		cancel()
 		return AgenticEvaluation{}, err
 	}
 	created, err := a.agenticEvaluations.Create(evaluation)
 	if err != nil {
-		a.removeCancel(evaluation.ID)
+		a.releaseAgenticEvaluation(evaluation.ID)
 		cancel()
 		return AgenticEvaluation{}, err
 	}
@@ -133,10 +143,12 @@ func makeAgenticEvaluationRuns(modelIDs, scenarioIDs []string, repetitions int) 
 	for repetition := 1; repetition <= repetitions; repetition++ {
 		for _, scenarioID := range scenarioIDs {
 			scenario, _ := findAgenticScenario(scenarioID)
+			environment := scenario.Build(repetition)
 			for _, modelID := range modelIDs {
 				runs = append(runs, AgenticEvaluationRun{
 					ID: newConversationID(), Model: modelID, ScenarioID: scenario.ID, ScenarioVersion: scenario.Version,
 					Environment: scenario.Environment, Category: scenario.Category, Title: scenario.Title, Goal: scenario.Goal,
+					InitialStateHash: environment.InitialStateHash(), GraderVersion: agenticGraderVersion,
 					Variant: repetition, Status: "pending", Actions: []AgenticEvaluationAction{},
 				})
 			}
@@ -146,14 +158,14 @@ func makeAgenticEvaluationRuns(modelIDs, scenarioIDs []string, repetitions int) 
 }
 
 func (a *App) runAgenticEvaluation(ctx context.Context, evaluation AgenticEvaluation, profile ConnectionProfile) {
-	defer a.removeCancel(evaluation.ID)
+	defer a.releaseAgenticEvaluation(evaluation.ID)
 	defer func() {
 		a.emitAgenticEvaluation(AgenticEvaluationEvent{EvaluationID: evaluation.ID, Type: "finished", Status: evaluation.Status})
 	}()
 
 	client, err := openai.NewClient(profile.BaseURL, profile.APIKey, streamingHTTPClient())
 	if err != nil {
-		a.finishAgenticEvaluation(&evaluation, "cancelled", friendlyError(err).Error())
+		a.finishAgenticConnectionFailure(&evaluation, friendlyError(err).Error())
 		return
 	}
 	a.emitAgenticEvaluation(AgenticEvaluationEvent{EvaluationID: evaluation.ID, Type: "started", Status: "running"})
@@ -196,6 +208,11 @@ func (a *App) executeAgenticRun(ctx context.Context, client *openai.Client, eval
 		return
 	}
 	environment := scenario.Build(run.Variant)
+	if run.InitialStateHash != "" && run.InitialStateHash != environment.InitialStateHash() {
+		finishAgenticRun(run, "failed", false, "scenario_mismatch", "시나리오 원본 버전을 확인할 수 없습니다", nil, "저장된 원본 지문과 실행 환경이 다릅니다")
+		_ = a.persistAgenticEvaluation(evaluation, "run_finished", run)
+		return
+	}
 	runContext, cancel := context.WithTimeout(ctx, agenticEvaluationTimeout)
 	defer cancel()
 	history := make([]openai.Message, 0, maxAgenticActions*2)
@@ -258,7 +275,7 @@ func (a *App) executeAgenticRun(ctx context.Context, client *openai.Client, eval
 		}
 
 		if action.Type == "complete" {
-			run.Actions = append(run.Actions, AgenticEvaluationAction{Step: step, Type: "complete", Status: "success", RawContent: trimAgenticRecord(response.Content), Output: action.Summary, OccurredAt: nowAgenticTime()})
+			run.Actions = append(run.Actions, AgenticEvaluationAction{Step: step, Type: "complete", Status: "success", Output: action.Summary, OccurredAt: nowAgenticTime()})
 			result := environment.Grade(action.Summary)
 			status := "failed"
 			if result.Passed {
@@ -276,7 +293,7 @@ func (a *App) executeAgenticRun(ctx context.Context, client *openai.Client, eval
 		}
 		run.Actions = append(run.Actions, AgenticEvaluationAction{
 			Step: step, Type: "tool", ToolName: action.Name, Arguments: string(action.Arguments), Output: trimAgenticRecord(execution.Output),
-			Status: execution.Status, RawContent: trimAgenticRecord(response.Content), OccurredAt: nowAgenticTime(),
+			Status: execution.Status, OccurredAt: nowAgenticTime(),
 		})
 		history = append(history,
 			openai.Message{Role: "assistant", Content: response.Content},
@@ -326,8 +343,66 @@ func (a *App) finishAgenticEvaluation(evaluation *AgenticEvaluation, status, err
 	}
 }
 
+func (a *App) finishAgenticConnectionFailure(evaluation *AgenticEvaluation, message string) {
+	for index := range evaluation.Runs {
+		run := &evaluation.Runs[index]
+		if run.Status != "pending" && run.Status != "running" {
+			continue
+		}
+		finishAgenticRun(run, "connection_error", false, "connection_error", "모델 연결을 시작하지 못했습니다", run.StateChanges, message)
+	}
+	evaluation.Status = "completed"
+	if err := a.persistAgenticEvaluation(evaluation, "completed", nil); err != nil {
+		a.emitAgenticEvaluation(AgenticEvaluationEvent{EvaluationID: evaluation.ID, Type: "failed", Status: evaluation.Status, Error: err.Error()})
+	}
+}
+
 func (a *App) cancelAgenticEvaluationRuns(evaluation *AgenticEvaluation, message string) {
 	a.finishAgenticEvaluation(evaluation, "cancelled", message)
+}
+
+func (a *App) reserveAgenticEvaluation(id string, cancel context.CancelFunc) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.agenticActiveID != "" {
+		return errors.New("다른 에이전트 실험이 실행 중입니다. 완료하거나 취소한 뒤 다시 시작해 주세요")
+	}
+	if _, exists := a.cancels[id]; exists {
+		return errors.New("같은 요청이 이미 실행 중입니다")
+	}
+	a.cancels[id] = cancel
+	a.agenticActiveID = id
+	return nil
+}
+
+func (a *App) releaseAgenticEvaluation(id string) {
+	a.mu.Lock()
+	delete(a.cancels, id)
+	if a.agenticActiveID == id {
+		a.agenticActiveID = ""
+	}
+	a.mu.Unlock()
+}
+
+func defaultAgenticExecutionRules() AgenticExecutionRules {
+	return AgenticExecutionRules{
+		ActionFormatVersion: agenticActionFormatVersion, SystemPromptVersion: agenticSystemPromptVersion,
+		ToolDefinitionVersion: agenticToolDefinitionVersion, GraderVersion: agenticGraderVersion,
+		MaxActions: maxAgenticActions, MaxInvalidActions: maxAgenticInvalidActions,
+		ContextLimitBytes: maxAgenticContextBytes, ResponseLimitBytes: maxAgenticResponseBytes,
+		ToolOutputLimitBytes: maxAgenticToolOutputBytes,
+		RunTimeoutSeconds:    int(agenticEvaluationTimeout.Seconds()), ActionTimeoutSeconds: int(agenticActionTimeout.Seconds()),
+	}
+}
+
+func validateAgenticExecutionRules(rules AgenticExecutionRules) error {
+	if rules.ActionFormatVersion == "" || rules.SystemPromptVersion == "" || rules.ToolDefinitionVersion == "" || rules.GraderVersion == "" {
+		return errors.New("에이전트 실험 실행 규칙 버전이 없습니다")
+	}
+	if rules.MaxActions < 1 || rules.MaxInvalidActions < 0 || rules.ContextLimitBytes < 1 || rules.ResponseLimitBytes < 1 || rules.ToolOutputLimitBytes < 1 || rules.RunTimeoutSeconds < 1 || rules.ActionTimeoutSeconds < 1 {
+		return errors.New("에이전트 실험 실행 제한이 올바르지 않습니다")
+	}
+	return nil
 }
 
 func finishAgenticRun(run *AgenticEvaluationRun, status string, passed bool, outcome, summary string, changes []AgenticEvaluationChange, errorMessage string) {
