@@ -7,6 +7,15 @@ export {
 };
 
 export type {
+    AgenticEvaluation,
+    AgenticEvaluationAction,
+    AgenticEvaluationChange,
+    AgenticEvaluationEvent,
+    AgenticEvaluationResult,
+    AgenticEvaluationRun,
+    AgenticEvaluationScenarioSummary,
+    AgenticEvaluationStartRequest,
+    AgenticEvaluationSummary,
     BenchmarkSyncLog,
     BenchmarkSyncPairRequest,
     BenchmarkSyncPeer,
