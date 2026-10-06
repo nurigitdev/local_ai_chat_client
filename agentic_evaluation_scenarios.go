@@ -11,12 +11,19 @@ import (
 	"strings"
 )
 
-const agenticScenarioVersion = "2026-10-01"
+const agenticScenarioVersion = "2026-10-02"
+
+const (
+	agenticSuiteDocumentBusiness = "문서·업무"
+	agenticSuiteDevelopment      = "개발"
+)
 
 type AgenticEvaluationScenarioSummary struct {
 	ID          string `json:"id"`
 	Version     string `json:"version"`
+	Suite       string `json:"suite"`
 	Environment string `json:"environment"`
+	Language    string `json:"language,omitempty"`
 	Category    string `json:"category"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
@@ -25,7 +32,9 @@ type AgenticEvaluationScenarioSummary struct {
 type agenticScenario struct {
 	ID          string
 	Version     string
+	Suite       string
 	Environment string
+	Language    string
 	Category    string
 	Title       string
 	Description string
@@ -53,7 +62,9 @@ type agenticToolExecution struct {
 	Changes []AgenticEvaluationChange
 }
 
-func agenticScenarios() []agenticScenario {
+// legacyAgenticScenarios is retained only so older stored runs can keep their
+// original descriptions. New evaluations use the focused eight-scenario catalog.
+func legacyAgenticScenarios() []agenticScenario {
 	return []agenticScenario{
 		{
 			ID: "document-refund-review", Version: agenticScenarioVersion, Environment: "문서 작업 공간", Category: "근거 탐색·분류", Title: "환불 대상 분류",
@@ -106,12 +117,45 @@ func agenticScenarios() []agenticScenario {
 	}
 }
 
+func agenticScenarios() []agenticScenario {
+	return []agenticScenario{
+		{
+			ID: "document-refund-review", Version: agenticScenarioVersion, Suite: agenticSuiteDocumentBusiness, Environment: "문서 작업 공간", Category: "근거 탐색·분류", Title: "환불 대상 분류",
+			Description: "정책과 주문 증빙을 읽고 분류 결과 파일을 만듭니다.",
+			Goal:        "[이슈 티켓] 환불 요청을 정책에 따라 분류하세요. 근거 문서와 주문 자료를 탐색해 `refund-review.json`에 주문 ID별 `approved`, `needs_review`, `rejected` 중 하나를 기록하세요. 근거가 부족한 주문은 `needs_review`로 남겨야 합니다. 필요한 자료를 읽고 결과를 확인한 뒤 완료를 선언하세요.",
+			Build:       buildDocumentRefundReview,
+		},
+		{
+			ID: "document-evidence-recovery", Version: agenticScenarioVersion, Suite: agenticSuiteDocumentBusiness, Environment: "문서 작업 공간", Category: "오류 복구", Title: "일시 오류 뒤 증빙 검토",
+			Description: "일시적인 읽기 오류를 복구하면서 증빙 기준을 적용합니다.",
+			Goal:        "[이슈 티켓] 증빙 검토 결과를 복구하세요. 정책과 사례 자료를 탐색해 `evidence-review.json`에 사례 ID별 `accepted`, `needs_review`, `rejected`를 기록하세요. 자료 조회가 일시적으로 실패하면 원인을 확인하고 다시 시도해야 합니다. 모든 근거를 확인한 뒤 완료를 선언하세요.",
+			Build:       buildDocumentEvidenceRecovery,
+		},
+		{
+			ID: "records-conflict-recovery", Version: agenticScenarioVersion, Suite: agenticSuiteDocumentBusiness, Environment: "업무 기록", Category: "충돌 복구", Title: "상태 충돌 뒤 재시도",
+			Description: "충돌 뒤 최신 상태를 다시 확인해 필요한 변경만 수행합니다.",
+			Goal:        "[이슈 티켓] 승인 요청을 처리하세요. 대상 기록을 탐색한 뒤 `approved` 상태로 변경하세요. 변경 충돌이 발생하면 최신 기록을 다시 확인하고, 최신 상태를 기준으로 필요한 변경만 재시도해야 합니다. 완료 전 최종 상태를 확인하세요.",
+			Build:       buildRecordsConflictRecovery,
+		},
+		{
+			ID: "records-no-change", Version: agenticScenarioVersion, Suite: agenticSuiteDocumentBusiness, Environment: "업무 기록", Category: "불필요한 변경 방지", Title: "근거 부족 시 변경하지 않기",
+			Description: "필수 근거가 없는 경우 상태를 변경하지 않는지 확인합니다.",
+			Goal:        "[이슈 티켓] 요청 기록을 검토하세요. 근거 문서와 요청 기록을 확인한 뒤에만 상태를 변경할 수 있습니다. 필수 근거가 부족한 경우 어떠한 변경도 하지 않은 채 완료를 선언해야 합니다.",
+			Build:       buildRecordsNoChange,
+		},
+		pythonQuerySerializerScenario(),
+		pythonRetryDelayScenario(),
+		javaPageLimitScenario(),
+		javaStateTransitionScenario(),
+	}
+}
+
 func listAgenticEvaluationScenarios() []AgenticEvaluationScenarioSummary {
 	scenarios := agenticScenarios()
 	result := make([]AgenticEvaluationScenarioSummary, 0, len(scenarios))
 	for _, scenario := range scenarios {
 		result = append(result, AgenticEvaluationScenarioSummary{
-			ID: scenario.ID, Version: scenario.Version, Environment: scenario.Environment, Category: scenario.Category,
+			ID: scenario.ID, Version: scenario.Version, Suite: scenario.Suite, Environment: scenario.Environment, Language: scenario.Language, Category: scenario.Category,
 			Title: scenario.Title, Description: scenario.Description,
 		})
 	}
@@ -120,6 +164,15 @@ func listAgenticEvaluationScenarios() []AgenticEvaluationScenarioSummary {
 
 func findAgenticScenario(id string) (agenticScenario, bool) {
 	for _, scenario := range agenticScenarios() {
+		if scenario.ID == id {
+			return scenario, true
+		}
+	}
+	return agenticScenario{}, false
+}
+
+func findLegacyAgenticScenario(id string) (agenticScenario, bool) {
+	for _, scenario := range legacyAgenticScenarios() {
 		if scenario.ID == id {
 			return scenario, true
 		}
@@ -466,7 +519,7 @@ func (e *recordEnvironment) Grade(_ string) AgenticEvaluationResult {
 	}
 	for id, expected := range e.expected {
 		actual, exists := e.recordFor(id)
-		if !exists || actual != expected {
+		if !exists || !sameRecordState(actual, expected) {
 			violations = append(violations, id+" 기록의 최종 상태가 채점 조건과 다릅니다")
 		}
 	}
@@ -474,6 +527,21 @@ func (e *recordEnvironment) Grade(_ string) AgenticEvaluationResult {
 		return AgenticEvaluationResult{Passed: false, Outcome: "goal_not_met", Summary: "업무 기록의 최종 상태가 채점 조건을 만족하지 않습니다.", Violations: violations}
 	}
 	return AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "업무 기록의 최종 상태가 모든 채점 조건을 만족합니다.", Requirements: []string{"필요 기록 조회", "필요한 상태 변경", "금지된 변경 없음"}}
+}
+
+// sameRecordState compares the business state. Note is an optional agent
+// annotation, so a useful status-update note must not invalidate an otherwise
+// correct transition.
+func sameRecordState(actual, expected recordData) bool {
+	return actual.ID == expected.ID &&
+		actual.Status == expected.Status &&
+		actual.Tier == expected.Tier &&
+		actual.Payment == expected.Payment &&
+		actual.Delivery == expected.Delivery &&
+		actual.Risk == expected.Risk &&
+		actual.Proof == expected.Proof &&
+		actual.Consent == expected.Consent &&
+		actual.Address == expected.Address
 }
 
 func (e *recordEnvironment) StateChanges() []AgenticEvaluationChange {

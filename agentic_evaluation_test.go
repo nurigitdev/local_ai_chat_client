@@ -2,15 +2,56 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func agenticReportFixture(t *testing.T, id string, model string) AgenticEvaluation {
+	t.Helper()
+	scenario, ok := findAgenticScenario("records-no-change")
+	if !ok {
+		t.Fatal("records-no-change scenario is missing")
+	}
+	return AgenticEvaluation{
+		ID: id, ProfileID: "profile-1", ProfileName: "테스트", ProfileBaseURL: "http://localhost:8000",
+		ModelIDs: []string{model}, ScenarioIDs: []string{scenario.ID}, MaxAttempts: 1,
+		ExecutionRules: defaultAgenticExecutionRules(), Status: "completed",
+		CreatedAt: "2026-10-01T00:00:00Z", UpdatedAt: "2026-10-01T00:05:00Z",
+		Runs: []AgenticEvaluationRun{{
+			ID: "run-" + id, Model: model, ScenarioID: scenario.ID, ScenarioVersion: scenario.Version,
+			InitialStateHash: scenario.Build(1).InitialStateHash(), GraderVersion: agenticGraderVersion,
+			Environment: scenario.Environment, Category: scenario.Category, Title: scenario.Title, Goal: scenario.Goal,
+			Variant: 1, Status: "success", StartedAt: "2026-10-01T00:00:01Z", FinishedAt: "2026-10-01T00:04:59Z",
+			Actions:      []AgenticEvaluationAction{{Step: 1, Type: "tool", ToolName: "list_records", Arguments: "{}", Output: "[N-701]", Status: "success", OccurredAt: "2026-10-01T00:00:02Z"}},
+			StateChanges: []AgenticEvaluationChange{{Resource: "N-701", Before: "open", After: "closed"}},
+			Result:       &AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "목표 상태를 확인했습니다.", Requirements: []string{"변경 없음"}},
+			Usage:        &TokenUsage{PromptTokens: 10, CompletionTokens: 4, TotalTokens: 14}, Metrics: &ResponseMetrics{TotalDurationMs: 2500, FirstTokenDurationMs: 180},
+		}},
+	}
+}
+
+func writeAgenticReport(t *testing.T, path string, version int, evaluation AgenticEvaluation) {
+	t.Helper()
+	payload, err := json.Marshal(agenticEvaluationReportPayload{Version: version, Evaluation: evaluation})
+	if err != nil {
+		t.Fatalf("marshal report payload: %v", err)
+	}
+	contents := []byte("<!doctype html>\n<!-- agent-chat-agentic-evaluation-report-v1 " + base64.StdEncoding.EncodeToString(payload) + " -->\n")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+}
 
 func TestDocumentEnvironmentRetriesWithoutLeakingState(t *testing.T) {
 	environment := buildDocumentEvidenceRecovery(1)
@@ -81,6 +122,90 @@ func TestRecordEnvironmentRejectsUnnecessaryChange(t *testing.T) {
 	}
 }
 
+func TestConflictRecoveryAcceptsUsefulNoteButRequiresTheRecoveredState(t *testing.T) {
+	environment := buildRecordsConflictRecovery(1)
+	if result := environment.Execute("get_record", json.RawMessage(`{"id":"C-601"}`)); result.Status != "success" {
+		t.Fatalf("initial read = %#v", result)
+	}
+	if result := environment.Execute("update_record", json.RawMessage(`{"id":"C-601","status":"approved","note":"승인 요청 처리"}`)); result.Status != "error" {
+		t.Fatalf("conflicting update = %#v", result)
+	}
+	if result := environment.Execute("get_record", json.RawMessage(`{"id":"C-601"}`)); result.Status != "success" {
+		t.Fatalf("recovery read = %#v", result)
+	}
+	if result := environment.Execute("update_record", json.RawMessage(`{"id":"C-601","status":"approved","note":"충돌 후 재시도"}`)); result.Status != "success" {
+		t.Fatalf("recovery update = %#v", result)
+	}
+	if result := environment.Grade("done"); !result.Passed {
+		t.Fatalf("grade with useful note = %#v", result)
+	}
+
+	if !sameRecordState(
+		recordData{ID: "C-601", Status: "approved", Payment: "confirmed", Note: "annotation"},
+		recordData{ID: "C-601", Status: "approved", Payment: "confirmed"},
+	) {
+		t.Fatal("a note must not change the graded business state")
+	}
+	if sameRecordState(
+		recordData{ID: "C-601", Status: "rejected", Payment: "confirmed"},
+		recordData{ID: "C-601", Status: "approved", Payment: "confirmed"},
+	) {
+		t.Fatal("a different status must not match the graded business state")
+	}
+}
+
+func TestJavaPageLimitAcceptsEquivalentUpperBoundImplementations(t *testing.T) {
+	for name, source := range map[string]string{
+		"math-min": `return Math.min(requested, maximum);`,
+		"explicit-branch": `if (requested > maximum) {
+  return maximum;
+}
+return requested;`,
+	} {
+		if !javaPageLimitUpperBoundCheck(source) {
+			t.Fatalf("%s implementation was rejected", name)
+		}
+	}
+	if javaPageLimitUpperBoundCheck(`return requested;`) {
+		t.Fatal("implementation without an upper bound was accepted")
+	}
+	if javaPageLimitUpperBoundCheck(`if (requested > maximum) return maximum; return maximum;`) {
+		t.Fatal("implementation that changes in-range values was accepted")
+	}
+}
+
+func TestPythonRetryDelayAcceptsEquivalentCappingImplementations(t *testing.T) {
+	for name, source := range map[string]string{
+		"min": `return min(base_ms * (2 ** (attempt - 1)), max_ms)`,
+		"explicit-branch": `delay = base_ms * (2 ** (attempt - 1))
+if delay > max_ms:
+  return max_ms
+return delay`,
+		"capped-doubling": `steps = attempt - 1
+cap_steps = 0
+value = base_ms
+while value < max_ms:
+  value *= 2
+  cap_steps += 1
+if steps >= cap_steps:
+  return max_ms
+return base_ms * (2 ** steps)`,
+	} {
+		if !pythonRetryDelayCheck(source) {
+			t.Fatalf("%s implementation was rejected", name)
+		}
+	}
+	if pythonRetryDelayCheck(`return base_ms * (2 ** (attempt - 1))`) {
+		t.Fatal("implementation without a maximum cap was accepted")
+	}
+	if pythonRetryDelayCheck(`delay = base_ms * (2 ** (attempt - 1))
+if delay > max_ms:
+  return max_ms
+return max_ms`) {
+		t.Fatal("implementation that changes uncapped values was accepted")
+	}
+}
+
 func TestParseAgenticModelActionRequiresOneStrictJSONObject(t *testing.T) {
 	action, err := parseAgenticModelAction(`{"type":"tool","name":"read_file","arguments":{"path":"policy.md"}}`)
 	if err != nil || action.Type != "tool" || action.Name != "read_file" {
@@ -101,21 +226,76 @@ func TestParseAgenticModelActionRequiresOneStrictJSONObject(t *testing.T) {
 }
 
 func TestAgenticEvaluationRunsShareVariantInitialStateAcrossModels(t *testing.T) {
-	runs := makeAgenticEvaluationRuns([]string{"model-a", "model-b"}, []string{"document-release-readiness"}, 2)
-	if len(runs) != 4 {
-		t.Fatalf("run count = %d, want 4", len(runs))
+	runs := makeAgenticEvaluationRuns([]string{"model-a", "model-b"}, []string{"document-refund-review"})
+	if len(runs) != 2 {
+		t.Fatalf("run count = %d, want 2", len(runs))
 	}
-	if runs[0].Variant != 1 || runs[1].Variant != 1 || runs[2].Variant != 2 || runs[3].Variant != 2 {
-		t.Fatalf("variants = %#v", runs)
+	if runs[0].Attempt != 1 || runs[1].Attempt != 1 || runs[0].Variant != 1 || runs[1].Variant != 1 {
+		t.Fatalf("initial attempts and variants = %#v", runs)
 	}
 	if runs[0].InitialStateHash == "" || runs[0].InitialStateHash != runs[1].InitialStateHash {
 		t.Fatalf("same-variant initial state = %q, %q", runs[0].InitialStateHash, runs[1].InitialStateHash)
 	}
-	if runs[0].InitialStateHash == runs[2].InitialStateHash {
-		t.Fatalf("different variants unexpectedly share initial state hash: %q", runs[0].InitialStateHash)
-	}
 	if runs[0].GraderVersion != agenticGraderVersion {
 		t.Fatalf("grader version = %q, want %q", runs[0].GraderVersion, agenticGraderVersion)
+	}
+}
+
+func TestAgenticEvaluationRetriesOnlyUntilFirstPass(t *testing.T) {
+	run := makeAgenticEvaluationRuns([]string{"model-a"}, []string{"records-no-change"})[0]
+	evaluation := AgenticEvaluation{MaxAttempts: 3}
+	run.StartedAt = nowAgenticTime()
+	run.Result = &AgenticEvaluationResult{Passed: false, Outcome: "failed"}
+	if !shouldRetryAgenticRun(evaluation, run) {
+		t.Fatal("failed first attempt should be retried")
+	}
+	retry, ok := nextAgenticEvaluationRun(evaluation, run)
+	if !ok || retry.Attempt != 2 || retry.Variant != 2 || retry.InitialStateHash == run.InitialStateHash || retry.RetryFeedback != nil {
+		t.Fatalf("retry = %#v, want a distinct second variant", retry)
+	}
+	feedbackEvaluation := AgenticEvaluation{MaxAttempts: 3, FeedbackRetry: true}
+	run.Result = &AgenticEvaluationResult{Passed: false, Outcome: "failed", Summary: "필수 조건을 확인하지 않았습니다", Violations: []string{"근거를 읽지 않았습니다"}}
+	feedbackRetry, ok := nextAgenticEvaluationRun(feedbackEvaluation, run)
+	if !ok || feedbackRetry.Attempt != 2 || feedbackRetry.Variant != run.Variant || feedbackRetry.InitialStateHash != run.InitialStateHash || feedbackRetry.RetryFeedback == nil || feedbackRetry.RetryFeedback.Attempt != 1 {
+		t.Fatalf("feedback retry = %#v, want the same initial environment and grader feedback", feedbackRetry)
+	}
+	if message := agenticRetryFeedbackMessage(*feedbackRetry.RetryFeedback); !strings.Contains(message, "근거를 읽지 않았습니다") {
+		t.Fatalf("feedback message = %q", message)
+	}
+	run.Result = &AgenticEvaluationResult{Passed: true, Outcome: "passed"}
+	if shouldRetryAgenticRun(evaluation, run) {
+		t.Fatal("passed attempt must not schedule another run")
+	}
+	retry.StartedAt = nowAgenticTime()
+	retry.Attempt = evaluation.MaxAttempts
+	retry.Result = &AgenticEvaluationResult{Passed: false, Outcome: "failed"}
+	if shouldRetryAgenticRun(evaluation, retry) {
+		t.Fatal("final allowed attempt must not be retried")
+	}
+}
+
+func TestAgenticEvaluationRunsEachTargetToCompletionBeforeStartingNextTarget(t *testing.T) {
+	runs := makeAgenticEvaluationRuns(
+		[]string{"model-a", "model-b"},
+		[]string{"document-refund-review", "records-no-change"},
+	)
+	evaluation := AgenticEvaluation{MaxAttempts: 3, Runs: runs}
+	evaluation.Runs[0].StartedAt = nowAgenticTime()
+	evaluation.Runs[0].Result = &AgenticEvaluationResult{Passed: false, Outcome: "failed"}
+
+	retry, ok := nextAgenticEvaluationRun(evaluation, evaluation.Runs[0])
+	if !ok {
+		t.Fatal("failed first attempt should create a retry")
+	}
+	retryIndex := insertAgenticEvaluationRunAfter(&evaluation, 0, retry)
+	if retryIndex != 1 {
+		t.Fatalf("retry index = %d, want 1", retryIndex)
+	}
+	if got := evaluation.Runs[1]; got.Model != "model-a" || got.ScenarioID != "document-refund-review" || got.Attempt != 2 {
+		t.Fatalf("adjacent retry = %#v, want model-a's second document attempt", got)
+	}
+	if got := evaluation.Runs[2]; got.Model != "model-b" || got.ScenarioID != "document-refund-review" || got.Attempt != 1 {
+		t.Fatalf("next target = %#v, want model-b's first document attempt", got)
 	}
 }
 
@@ -132,6 +312,69 @@ func TestEveryScenarioHasDeterministicDistinctVariants(t *testing.T) {
 		if first != scenario.Build(1).InitialStateHash() {
 			t.Fatalf("%s variant 1 is not deterministic", scenario.ID)
 		}
+	}
+}
+
+func TestAgenticScenarioCatalogSeparatesDocumentBusinessAndDevelopment(t *testing.T) {
+	scenarios := agenticScenarios()
+	if len(scenarios) != 8 {
+		t.Fatalf("scenario count = %d, want 8", len(scenarios))
+	}
+	counts := map[string]int{}
+	languages := map[string]int{}
+	for _, scenario := range scenarios {
+		counts[scenario.Suite]++
+		if scenario.Suite == agenticSuiteDevelopment {
+			languages[scenario.Language]++
+		}
+	}
+	if counts[agenticSuiteDocumentBusiness] != 4 || counts[agenticSuiteDevelopment] != 4 {
+		t.Fatalf("suite counts = %#v, want four scenarios in each suite", counts)
+	}
+	if languages["Python"] != 2 || languages["Java"] != 2 {
+		t.Fatalf("development language counts = %#v, want two Python and two Java scenarios", languages)
+	}
+	if _, found := findAgenticScenario("document-release-readiness"); found {
+		t.Fatal("retired document scenario must not be selectable")
+	}
+}
+
+func TestCodeEnvironmentRequiresRelevantReadsTestsAndTargetOnlyChanges(t *testing.T) {
+	scenario, found := findAgenticScenario("python-query-serializer")
+	if !found {
+		t.Fatal("python query scenario is missing")
+	}
+	environment := scenario.Build(1)
+	for _, path := range []string{"ISSUE.md", "docs/query-contract.md", "tests/test_query_public.md", "src/query.py"} {
+		if result := environment.Execute("read_file", json.RawMessage(`{"path":"`+path+`"}`)); result.Status != "success" {
+			t.Fatalf("read %s = %#v", path, result)
+		}
+	}
+	content := `def serialize_query(params):
+    parts = []
+    for key, value in params.items():
+        if value is None:
+            continue
+        rendered = "true" if value is True else "false" if value is False else str(value)
+        parts.append(f"{key}={rendered}")
+    return "&".join(parts)
+`
+	if result := environment.Execute("write_file", json.RawMessage(`{"path":"src/query.py","content":`+strconv.Quote(content)+`}`)); result.Status != "success" {
+		t.Fatalf("write target = %#v", result)
+	}
+	if result := environment.Execute("run_tests", json.RawMessage(`{}`)); result.Status != "success" || !strings.Contains(result.Output, `"passed":true`) {
+		t.Fatalf("run tests = %#v", result)
+	}
+	if result := environment.Grade("done"); !result.Passed {
+		t.Fatalf("grade = %#v", result)
+	}
+
+	forbidden := scenario.Build(1)
+	if result := forbidden.Execute("write_file", json.RawMessage(`{"path":"src/query_legacy.py","content":"changed"}`)); result.Status != "error" {
+		t.Fatalf("dummy write = %#v", result)
+	}
+	if result := forbidden.Grade("done"); result.Passed || len(result.Violations) == 0 {
+		t.Fatalf("forbidden grade = %#v", result)
 	}
 }
 
@@ -157,7 +400,10 @@ func TestAgenticRunStatusClassifiesCancellationAndTimeout(t *testing.T) {
 	if status := agenticRunStatusForContext(cancelledContext); status != "cancelled" {
 		t.Fatalf("cancelled status = %q", status)
 	}
-	timedOutContext, timedOutCancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	// A deadline already in the past deterministically represents a time limit.
+	// A one-nanosecond timeout can be cancelled by its cleanup before its timer
+	// is observed on very fast Windows test runs.
+	timedOutContext, timedOutCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer timedOutCancel()
 	time.Sleep(time.Millisecond)
 	if status := agenticRunStatusForContext(timedOutContext); status != "time_limit" {
@@ -173,7 +419,7 @@ func TestAgenticEvaluationStorePersistsAndMarksInterruptedRuns(t *testing.T) {
 	}
 	evaluation := AgenticEvaluation{
 		ID: "evaluation-1", ProfileID: "profile-1", ProfileName: "테스트", ProfileBaseURL: "http://localhost:8000",
-		ModelIDs: []string{"model-a"}, ScenarioIDs: []string{scenario.ID}, Repetitions: 1, Status: "running",
+		ModelIDs: []string{"model-a"}, ScenarioIDs: []string{scenario.ID}, MaxAttempts: 1, FeedbackRetry: true, Status: "running",
 		Runs: []AgenticEvaluationRun{{
 			ID: "run-1", Model: "model-a", ScenarioID: scenario.ID, ScenarioVersion: scenario.Version,
 			Environment: scenario.Environment, Category: scenario.Category, Title: scenario.Title, Goal: scenario.Goal,
@@ -191,8 +437,12 @@ func TestAgenticEvaluationStorePersistsAndMarksInterruptedRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	if opened.Status != "cancelled" || opened.Runs[0].Status != "cancelled" || opened.Runs[0].Result == nil || opened.Runs[0].Result.Outcome != "interrupted" {
+	if opened.Status != "cancelled" || !opened.FeedbackRetry || opened.Runs[0].Status != "cancelled" || opened.Runs[0].Result == nil || opened.Runs[0].Result.Outcome != "interrupted" {
 		t.Fatalf("interrupted record = %#v", opened)
+	}
+	summaries, err := store.List()
+	if err != nil || len(summaries) != 1 || !summaries[0].FeedbackRetry {
+		t.Fatalf("summary = %#v, err = %v", summaries, err)
 	}
 }
 
@@ -206,7 +456,7 @@ func TestAgenticEvaluationStoreBoundsCompletedHistory(t *testing.T) {
 		initialHash := scenario.Build(1).InitialStateHash()
 		evaluation := AgenticEvaluation{
 			ID: newConversationID(), ProfileID: "profile-1", ProfileName: "테스트", ProfileBaseURL: "http://localhost:8000",
-			ModelIDs: []string{"model-a"}, ScenarioIDs: []string{scenario.ID}, Repetitions: 1,
+			ModelIDs: []string{"model-a"}, ScenarioIDs: []string{scenario.ID}, MaxAttempts: 1,
 			ExecutionRules: defaultAgenticExecutionRules(), Status: "completed",
 			Runs: []AgenticEvaluationRun{{
 				ID: newConversationID(), Model: "model-a", ScenarioID: scenario.ID, ScenarioVersion: scenario.Version,
@@ -225,6 +475,118 @@ func TestAgenticEvaluationStoreBoundsCompletedHistory(t *testing.T) {
 	}
 	if len(summaries) != maxStoredAgenticEvaluations {
 		t.Fatalf("stored summary count = %d, want %d", len(summaries), maxStoredAgenticEvaluations)
+	}
+}
+
+func TestAgenticEvaluationStoreExcludesLegacyRepeatRecords(t *testing.T) {
+	store := newAgenticEvaluationStore(t.TempDir())
+	directory, err := store.directory()
+	if err != nil {
+		t.Fatalf("directory() error = %v", err)
+	}
+	id := newConversationID()
+	contents := []byte("<!-- agent-chat-agentic-evaluation {\"id\":\"" + id + "\",\"repetitions\":1} -->\n")
+	if err := os.WriteFile(filepath.Join(directory, id+".md"), contents, 0o600); err != nil {
+		t.Fatalf("write legacy record: %v", err)
+	}
+	summaries, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(summaries) != 0 {
+		t.Fatalf("legacy records must be excluded from history: %#v", summaries)
+	}
+	if _, err := store.Open(id); !errors.Is(err, errLegacyAgenticEvaluation) {
+		t.Fatalf("Open() error = %v, want legacy-record error", err)
+	}
+}
+
+func TestAgenticEvaluationReportImportsFullRecordAndSkipsDuplicates(t *testing.T) {
+	store := newAgenticEvaluationStore(t.TempDir())
+	evaluation := agenticReportFixture(t, "report-evaluation", "model-a")
+	evaluation.Runs[0].Actions[0].RawContent = `{"type":"tool","name":"list_records"}`
+	path := filepath.Join(t.TempDir(), "agentic-report.html")
+	writeAgenticReport(t, path, agenticEvaluationReportFormatVersion, evaluation)
+
+	imported, err := store.ImportReport(path)
+	if err != nil {
+		t.Fatalf("ImportReport() error = %v", err)
+	}
+	if imported.Duplicate || imported.Evaluation.ID != evaluation.ID {
+		t.Fatalf("first import = %#v", imported)
+	}
+	opened, err := store.Open(evaluation.ID)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if opened.CreatedAt != evaluation.CreatedAt || opened.UpdatedAt != evaluation.UpdatedAt {
+		t.Fatalf("timestamps changed after import: %#v", opened)
+	}
+	if got := opened.Runs[0].Actions[0].RawContent; got != evaluation.Runs[0].Actions[0].RawContent {
+		t.Fatalf("raw action record = %q, want %q", got, evaluation.Runs[0].Actions[0].RawContent)
+	}
+	if got := opened.Runs[0].StateChanges[0].After; got != "closed" {
+		t.Fatalf("state change after = %q", got)
+	}
+
+	duplicate, err := store.ImportReport(path)
+	if err != nil {
+		t.Fatalf("second ImportReport() error = %v", err)
+	}
+	if !duplicate.Duplicate || duplicate.Evaluation.ID != evaluation.ID {
+		t.Fatalf("duplicate import = %#v", duplicate)
+	}
+	summaries, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("history count = %d, want 1", len(summaries))
+	}
+}
+
+func TestAgenticEvaluationReportProtectsConflictingRecord(t *testing.T) {
+	store := newAgenticEvaluationStore(t.TempDir())
+	existing := agenticReportFixture(t, "shared-evaluation", "model-a")
+	if _, err := store.Create(existing); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	incoming := agenticReportFixture(t, existing.ID, "model-b")
+	path := filepath.Join(t.TempDir(), "agentic-report.md")
+	writeAgenticReport(t, path, agenticEvaluationReportFormatVersion, incoming)
+
+	imported, err := store.ImportReport(path)
+	if err != nil {
+		t.Fatalf("ImportReport() error = %v", err)
+	}
+	if imported.Duplicate || imported.Evaluation.ID == existing.ID {
+		t.Fatalf("conflicting import = %#v", imported)
+	}
+	original, err := store.Open(existing.ID)
+	if err != nil {
+		t.Fatalf("Open original error = %v", err)
+	}
+	if original.ModelIDs[0] != "model-a" {
+		t.Fatalf("original record was overwritten: %#v", original)
+	}
+	if imported.Evaluation.ModelIDs[0] != "model-b" {
+		t.Fatalf("imported record = %#v", imported.Evaluation)
+	}
+}
+
+func TestAgenticEvaluationReportRejectsUnsupportedVersionAndRunningResult(t *testing.T) {
+	store := newAgenticEvaluationStore(t.TempDir())
+	evaluation := agenticReportFixture(t, "invalid-report", "model-a")
+	path := filepath.Join(t.TempDir(), "agentic-report.html")
+	writeAgenticReport(t, path, agenticEvaluationReportFormatVersion+1, evaluation)
+	if _, err := store.ImportReport(path); err == nil || !strings.Contains(err.Error(), "지원하지 않는") {
+		t.Fatalf("unsupported version error = %v", err)
+	}
+
+	evaluation.Status = "running"
+	writeAgenticReport(t, path, agenticEvaluationReportFormatVersion, evaluation)
+	if _, err := store.ImportReport(path); err == nil || !strings.Contains(err.Error(), "실행 중") {
+		t.Fatalf("running report error = %v", err)
 	}
 }
 
@@ -274,7 +636,7 @@ func TestAgenticEvaluationRunsToolsUntilStateBasedSuccess(t *testing.T) {
 		ProfileName: "테스트 서버",
 		ModelIDs:    []string{"local-agent"},
 		ScenarioIDs: []string{"records-conflict-recovery"},
-		Repetitions: 1,
+		MaxAttempts: 1,
 	})
 	if err != nil {
 		t.Fatalf("StartAgenticEvaluation() error = %v", err)
@@ -322,7 +684,7 @@ func TestAgenticEvaluationSeparatesConnectionFailure(t *testing.T) {
 	}
 	created, err := app.StartAgenticEvaluation(AgenticEvaluationStartRequest{
 		Profile: ConnectionProfile{BaseURL: server.URL, APIKey: "test-key"}, ProfileID: "profile-1", ProfileName: "테스트 서버",
-		ModelIDs: []string{"local-agent"}, ScenarioIDs: []string{"records-no-change"}, Repetitions: 1,
+		ModelIDs: []string{"local-agent"}, ScenarioIDs: []string{"records-no-change"}, MaxAttempts: 1,
 	})
 	if err != nil {
 		t.Fatalf("StartAgenticEvaluation() error = %v", err)
@@ -363,7 +725,7 @@ func TestAgenticEvaluationSeparatesRepeatedFormatFailure(t *testing.T) {
 	}
 	created, err := app.StartAgenticEvaluation(AgenticEvaluationStartRequest{
 		Profile: ConnectionProfile{BaseURL: server.URL, APIKey: "test-key"}, ProfileID: "profile-1", ProfileName: "테스트 서버",
-		ModelIDs: []string{"local-agent"}, ScenarioIDs: []string{"records-no-change"}, Repetitions: 1,
+		ModelIDs: []string{"local-agent"}, ScenarioIDs: []string{"records-no-change"}, MaxAttempts: 1,
 	})
 	if err != nil {
 		t.Fatalf("StartAgenticEvaluation() error = %v", err)

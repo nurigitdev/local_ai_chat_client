@@ -19,7 +19,10 @@ const (
 	maxAgenticEvaluationRecordBytes = 64 * 1024 * 1024
 )
 
-var agenticEvaluationMarker = regexp.MustCompile(`(?m)^<!-- agent-chat-agentic-evaluation (\{.*\}) -->$`)
+var (
+	agenticEvaluationMarker    = regexp.MustCompile(`(?m)^<!-- agent-chat-agentic-evaluation (\{.*\}) -->$`)
+	errLegacyAgenticEvaluation = errors.New("기존 반복 실험 기록은 더 이상 지원하지 않습니다")
+)
 
 // AgenticEvaluationStartRequest starts one sequential queue. Profile.APIKey is
 // used only while the queue is running and is deliberately excluded from the
@@ -30,7 +33,8 @@ type AgenticEvaluationStartRequest struct {
 	ProfileName     string            `json:"profileName"`
 	ModelIDs        []string          `json:"modelIDs"`
 	ScenarioIDs     []string          `json:"scenarioIDs"`
-	Repetitions     int               `json:"repetitions"`
+	MaxAttempts     int               `json:"maxAttempts"`
+	FeedbackRetry   bool              `json:"feedbackRetry"`
 	ReasoningEffort string            `json:"reasoningEffort,omitempty"`
 }
 
@@ -41,7 +45,8 @@ type AgenticEvaluation struct {
 	ProfileBaseURL  string                 `json:"profileBaseURL"`
 	ModelIDs        []string               `json:"modelIDs"`
 	ScenarioIDs     []string               `json:"scenarioIDs"`
-	Repetitions     int                    `json:"repetitions"`
+	MaxAttempts     int                    `json:"maxAttempts"`
+	FeedbackRetry   bool                   `json:"feedbackRetry"`
 	ReasoningEffort string                 `json:"reasoningEffort,omitempty"`
 	ExecutionRules  AgenticExecutionRules  `json:"executionRules"`
 	Status          string                 `json:"status"`
@@ -73,10 +78,13 @@ type AgenticEvaluationRun struct {
 	ScenarioVersion  string                    `json:"scenarioVersion"`
 	InitialStateHash string                    `json:"initialStateHash,omitempty"`
 	GraderVersion    string                    `json:"graderVersion"`
+	Suite            string                    `json:"suite,omitempty"`
 	Environment      string                    `json:"environment"`
+	Language         string                    `json:"language,omitempty"`
 	Category         string                    `json:"category"`
 	Title            string                    `json:"title"`
 	Goal             string                    `json:"goal"`
+	Attempt          int                       `json:"attempt"`
 	Variant          int                       `json:"variant"`
 	Status           string                    `json:"status"`
 	StartedAt        string                    `json:"startedAt,omitempty"`
@@ -86,6 +94,7 @@ type AgenticEvaluationRun struct {
 	Result           *AgenticEvaluationResult  `json:"result,omitempty"`
 	Usage            *TokenUsage               `json:"usage,omitempty"`
 	Metrics          *ResponseMetrics          `json:"metrics,omitempty"`
+	RetryFeedback    *AgenticRetryFeedback     `json:"retryFeedback,omitempty"`
 	Error            string                    `json:"error,omitempty"`
 }
 
@@ -114,19 +123,31 @@ type AgenticEvaluationResult struct {
 	Violations   []string `json:"violations,omitempty"`
 }
 
+// AgenticRetryFeedback is the state-grader result supplied to a retry. The
+// retry starts from a clean copy of the same initial environment.
+type AgenticRetryFeedback struct {
+	Attempt      int      `json:"attempt"`
+	Outcome      string   `json:"outcome"`
+	Summary      string   `json:"summary"`
+	Requirements []string `json:"requirements,omitempty"`
+	Violations   []string `json:"violations,omitempty"`
+}
+
 type AgenticEvaluationSummary struct {
-	ID               string   `json:"id"`
-	ProfileName      string   `json:"profileName"`
-	ProfileBaseURL   string   `json:"profileBaseURL"`
-	Models           []string `json:"models"`
-	ScenarioCount    int      `json:"scenarioCount"`
-	Repetitions      int      `json:"repetitions"`
-	Status           string   `json:"status"`
-	CreatedAt        string   `json:"createdAt"`
-	UpdatedAt        string   `json:"updatedAt"`
-	RunCount         int      `json:"runCount"`
-	FinishedRunCount int      `json:"finishedRunCount"`
-	PassedRunCount   int      `json:"passedRunCount"`
+	ID                string   `json:"id"`
+	ProfileName       string   `json:"profileName"`
+	ProfileBaseURL    string   `json:"profileBaseURL"`
+	Models            []string `json:"models"`
+	Suites            []string `json:"suites,omitempty"`
+	ScenarioCount     int      `json:"scenarioCount"`
+	TargetCount       int      `json:"targetCount"`
+	MaxAttempts       int      `json:"maxAttempts"`
+	FeedbackRetry     bool     `json:"feedbackRetry"`
+	Status            string   `json:"status"`
+	CreatedAt         string   `json:"createdAt"`
+	UpdatedAt         string   `json:"updatedAt"`
+	AttemptedRunCount int      `json:"attemptedRunCount"`
+	PassedTargetCount int      `json:"passedTargetCount"`
 }
 
 type agenticEvaluationStore struct {
@@ -199,6 +220,9 @@ func (s *agenticEvaluationStore) Open(id string) (AgenticEvaluation, error) {
 	}
 	evaluation, err := parseAgenticEvaluation(contents)
 	if err != nil {
+		if errors.Is(err, errLegacyAgenticEvaluation) {
+			return AgenticEvaluation{}, errLegacyAgenticEvaluation
+		}
 		return AgenticEvaluation{}, fmt.Errorf("에이전트 실험 기록 형식이 올바르지 않습니다: %w", err)
 	}
 	if evaluation.ID != id {
@@ -230,6 +254,9 @@ func (s *agenticEvaluationStore) List() ([]AgenticEvaluationSummary, error) {
 		}
 		evaluation, err := parseAgenticEvaluation(contents)
 		if err != nil {
+			if errors.Is(err, errLegacyAgenticEvaluation) {
+				continue
+			}
 			return nil, fmt.Errorf("에이전트 실험 기록 %q의 형식이 올바르지 않습니다: %w", entry.Name(), err)
 		}
 		summaries = append(summaries, agenticEvaluationSummary(evaluation))
@@ -284,6 +311,9 @@ func (s *agenticEvaluationStore) pruneCompletedLocked() error {
 		}
 		evaluation, parseErr := parseAgenticEvaluation(contents)
 		if parseErr != nil {
+			if errors.Is(parseErr, errLegacyAgenticEvaluation) {
+				continue
+			}
 			return fmt.Errorf("에이전트 실험 기록 %q의 형식이 올바르지 않습니다: %w", entry.Name(), parseErr)
 		}
 		if evaluation.Status != "running" {
@@ -327,6 +357,9 @@ func (s *agenticEvaluationStore) MarkInterrupted() error {
 		}
 		evaluation, err := parseAgenticEvaluation(contents)
 		if err != nil {
+			if errors.Is(err, errLegacyAgenticEvaluation) {
+				continue
+			}
 			return fmt.Errorf("에이전트 실험 기록 %q의 형식이 올바르지 않습니다: %w", entry.Name(), err)
 		}
 		if evaluation.Status != "running" {
@@ -421,10 +454,29 @@ func normalizeAgenticEvaluation(evaluation AgenticEvaluation) AgenticEvaluation 
 		if run.GraderVersion == "" {
 			run.GraderVersion = evaluation.ExecutionRules.GraderVersion
 		}
+		run.Suite = strings.TrimSpace(run.Suite)
 		run.Environment = strings.TrimSpace(run.Environment)
+		run.Language = strings.TrimSpace(run.Language)
+		if run.Suite == "" {
+			if scenario, found := findAgenticScenario(run.ScenarioID); found {
+				run.Suite = scenario.Suite
+				if run.Language == "" {
+					run.Language = scenario.Language
+				}
+			} else if _, found := findLegacyAgenticScenario(run.ScenarioID); found {
+				run.Suite = agenticSuiteDocumentBusiness
+			} else if strings.HasPrefix(run.ScenarioID, "document-") || strings.HasPrefix(run.ScenarioID, "records-") {
+				run.Suite = agenticSuiteDocumentBusiness
+			} else {
+				run.Suite = "기존 시나리오"
+			}
+		}
 		run.Category = strings.TrimSpace(run.Category)
 		run.Title = strings.TrimSpace(run.Title)
 		run.Goal = strings.TrimSpace(run.Goal)
+		if run.Attempt < 1 {
+			run.Attempt = run.Variant
+		}
 		run.Status = strings.TrimSpace(run.Status)
 		run.Error = strings.TrimSpace(run.Error)
 		for actionIndex := range run.Actions {
@@ -475,8 +527,8 @@ func validateAgenticEvaluation(evaluation AgenticEvaluation) error {
 	if len(evaluation.ScenarioIDs) < 1 || len(evaluation.ScenarioIDs) > 12 {
 		return errors.New("1개에서 12개의 시나리오를 선택해 주세요")
 	}
-	if evaluation.Repetitions < 1 || evaluation.Repetitions > 10 {
-		return errors.New("반복 횟수는 1에서 10 사이여야 합니다")
+	if evaluation.MaxAttempts < 1 || evaluation.MaxAttempts > 10 {
+		return errors.New("최대 시도 횟수는 1에서 10 사이여야 합니다")
 	}
 	if _, err := normalizeReasoningEffort(evaluation.ReasoningEffort); err != nil {
 		return err
@@ -495,7 +547,7 @@ func validateAgenticEvaluation(evaluation AgenticEvaluation) error {
 	}
 	seenRunIDs := make(map[string]struct{}, len(evaluation.Runs))
 	for _, run := range evaluation.Runs {
-		if !isSafeConversationID(run.ID) || run.Model == "" || run.ScenarioID == "" || run.ScenarioVersion == "" || run.GraderVersion == "" || run.Environment == "" || run.Title == "" || run.Goal == "" {
+		if !isSafeConversationID(run.ID) || run.Model == "" || run.ScenarioID == "" || run.ScenarioVersion == "" || run.GraderVersion == "" || run.Suite == "" || run.Environment == "" || run.Title == "" || run.Goal == "" || run.Attempt < 1 {
 			return errors.New("올바르지 않은 에이전트 실행 기록입니다")
 		}
 		if _, exists := seenRunIDs[run.ID]; exists {
@@ -541,6 +593,15 @@ func parseAgenticEvaluation(contents []byte) (AgenticEvaluation, error) {
 	if len(match) != 2 {
 		return AgenticEvaluation{}, errors.New("에이전트 실험 정보가 없습니다")
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(match[1], &fields); err != nil {
+		return AgenticEvaluation{}, errors.New("에이전트 실험 정보가 올바르지 않습니다")
+	}
+	if _, hasMaxAttempts := fields["maxAttempts"]; !hasMaxAttempts {
+		if _, isLegacyRepeat := fields["repetitions"]; isLegacyRepeat {
+			return AgenticEvaluation{}, errLegacyAgenticEvaluation
+		}
+	}
 	var evaluation AgenticEvaluation
 	if err := json.Unmarshal(match[1], &evaluation); err != nil {
 		return AgenticEvaluation{}, errors.New("에이전트 실험 정보가 올바르지 않습니다")
@@ -555,16 +616,32 @@ func parseAgenticEvaluation(contents []byte) (AgenticEvaluation, error) {
 func agenticEvaluationSummary(evaluation AgenticEvaluation) AgenticEvaluationSummary {
 	summary := AgenticEvaluationSummary{
 		ID: evaluation.ID, ProfileName: evaluation.ProfileName, ProfileBaseURL: evaluation.ProfileBaseURL,
-		Models: evaluation.ModelIDs, ScenarioCount: len(evaluation.ScenarioIDs), Repetitions: evaluation.Repetitions,
-		Status: evaluation.Status, CreatedAt: evaluation.CreatedAt, UpdatedAt: evaluation.UpdatedAt, RunCount: len(evaluation.Runs),
+		Models: evaluation.ModelIDs, ScenarioCount: len(evaluation.ScenarioIDs), TargetCount: len(evaluation.ModelIDs) * len(evaluation.ScenarioIDs),
+		MaxAttempts: evaluation.MaxAttempts, FeedbackRetry: evaluation.FeedbackRetry, Status: evaluation.Status, CreatedAt: evaluation.CreatedAt, UpdatedAt: evaluation.UpdatedAt,
 	}
+	suites := make(map[string]struct{})
+	passedTargets := make(map[string]struct{}, summary.TargetCount)
 	for _, run := range evaluation.Runs {
-		if run.Status != "pending" && run.Status != "running" {
-			summary.FinishedRunCount++
+		suites[run.Suite] = struct{}{}
+		if agenticRunWasAttempted(run) {
+			summary.AttemptedRunCount++
 		}
 		if run.Result != nil && run.Result.Passed {
-			summary.PassedRunCount++
+			passedTargets[agenticEvaluationTargetKey(run.Model, run.ScenarioID)] = struct{}{}
 		}
 	}
+	for suite := range suites {
+		summary.Suites = append(summary.Suites, suite)
+	}
+	sort.Strings(summary.Suites)
+	summary.PassedTargetCount = len(passedTargets)
 	return summary
+}
+
+func agenticEvaluationTargetKey(model, scenarioID string) string {
+	return model + "\x00" + scenarioID
+}
+
+func agenticRunWasAttempted(run AgenticEvaluationRun) bool {
+	return run.StartedAt != ""
 }

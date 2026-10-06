@@ -66,6 +66,13 @@ export function GetBenchmarkSyncState(): $CancellablePromise<$models.BenchmarkSy
 }
 
 /**
+ * ImportAgenticEvaluationReport adds an exported agentic evaluation to local history.
+ */
+export function ImportAgenticEvaluationReport(path: string): $CancellablePromise<$models.AgenticEvaluationImportResult> {
+    return $Call.ByID(1079713217, path);
+}
+
+/**
  * ImportBenchmarkReport adds new results embedded in an exported Markdown or
  * HTML benchmark report to the local benchmark history.
  */
@@ -119,6 +126,13 @@ export function RejectBenchmarkSyncPairing(requestID: string): $CancellablePromi
 
 export function RunBenchmarkSync(deviceID: string, direction: string): $CancellablePromise<$models.BenchmarkSyncState> {
     return $Call.ByID(356619878, deviceID, direction);
+}
+
+/**
+ * SaveAgenticEvaluationExport writes a user-selected agentic evaluation report.
+ */
+export function SaveAgenticEvaluationExport(path: string, contents: string): $CancellablePromise<void> {
+    return $Call.ByID(1133514393, path, contents);
 }
 
 /**

@@ -8,7 +8,8 @@ export interface AgenticEvaluation {
     "profileBaseURL": string;
     "modelIDs": string[] | null;
     "scenarioIDs": string[] | null;
-    "repetitions": number;
+    "maxAttempts": number;
+    "feedbackRetry": boolean;
     "reasoningEffort"?: string;
     "executionRules": AgenticExecutionRules;
     "status": string;
@@ -43,6 +44,15 @@ export interface AgenticEvaluationEvent {
     "error"?: string;
 }
 
+/**
+ * AgenticEvaluationImportResult describes whether a report added a new result
+ * or matched an equivalent record already kept in local history.
+ */
+export interface AgenticEvaluationImportResult {
+    "evaluation": AgenticEvaluation;
+    "duplicate": boolean;
+}
+
 export interface AgenticEvaluationResult {
     "passed": boolean;
     "outcome": string;
@@ -58,10 +68,13 @@ export interface AgenticEvaluationRun {
     "scenarioVersion": string;
     "initialStateHash"?: string;
     "graderVersion": string;
+    "suite"?: string;
     "environment": string;
+    "language"?: string;
     "category": string;
     "title": string;
     "goal": string;
+    "attempt": number;
     "variant": number;
     "status": string;
     "startedAt"?: string;
@@ -71,13 +84,16 @@ export interface AgenticEvaluationRun {
     "result"?: AgenticEvaluationResult | null;
     "usage"?: TokenUsage | null;
     "metrics"?: ResponseMetrics | null;
+    "retryFeedback"?: AgenticRetryFeedback | null;
     "error"?: string;
 }
 
 export interface AgenticEvaluationScenarioSummary {
     "id": string;
     "version": string;
+    "suite": string;
     "environment": string;
+    "language"?: string;
     "category": string;
     "title": string;
     "description": string;
@@ -94,7 +110,8 @@ export interface AgenticEvaluationStartRequest {
     "profileName": string;
     "modelIDs": string[] | null;
     "scenarioIDs": string[] | null;
-    "repetitions": number;
+    "maxAttempts": number;
+    "feedbackRetry": boolean;
     "reasoningEffort"?: string;
 }
 
@@ -103,14 +120,16 @@ export interface AgenticEvaluationSummary {
     "profileName": string;
     "profileBaseURL": string;
     "models": string[] | null;
+    "suites"?: string[] | null;
     "scenarioCount": number;
-    "repetitions": number;
+    "targetCount": number;
+    "maxAttempts": number;
+    "feedbackRetry": boolean;
     "status": string;
     "createdAt": string;
     "updatedAt": string;
-    "runCount": number;
-    "finishedRunCount": number;
-    "passedRunCount": number;
+    "attemptedRunCount": number;
+    "passedTargetCount": number;
 }
 
 /**
@@ -129,6 +148,18 @@ export interface AgenticExecutionRules {
     "toolOutputLimitBytes": number;
     "runTimeoutSeconds": number;
     "actionTimeoutSeconds": number;
+}
+
+/**
+ * AgenticRetryFeedback is the state-grader result supplied to a retry. The
+ * retry starts from a clean copy of the same initial environment.
+ */
+export interface AgenticRetryFeedback {
+    "attempt": number;
+    "outcome": string;
+    "summary": string;
+    "requirements"?: string[] | null;
+    "violations"?: string[] | null;
 }
 
 export interface BenchmarkSyncLog {

@@ -1,4 +1,4 @@
-import {FormEvent, useEffect, useMemo, useRef, useState} from 'react';
+import {FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState} from 'react';
 import {Dialogs, Events} from '@wailsio/runtime';
 import ReactMarkdown from 'react-markdown';
 import {renderToStaticMarkup} from 'react-dom/server';
@@ -1401,6 +1401,12 @@ function ModelBenchmarkWorkspace({
         }
     }
 
+    function handleAPIKeyKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+        if (event.key !== 'Enter' || isRunning || loadingModels || !selectedProfile) return;
+        event.preventDefault();
+        void loadModels();
+    }
+
     function cancelModelLoad() {
         const request = modelLoadPromiseRef.current;
         if (!request) return;
@@ -1817,7 +1823,7 @@ function ModelBenchmarkWorkspace({
                     </label>
                     <label>
                         API 키 <small>연결 화면의 입력값을 자동 사용 · 저장 안 됨</small>
-                        <input value={apiKey} onChange={(event) => setAPIKey(event.target.value)} type="password" autoComplete="off" placeholder="필요한 경우 입력" disabled={isRunning} />
+                        <input value={apiKey} onChange={(event) => setAPIKey(event.target.value)} onKeyDown={handleAPIKeyKeyDown} type="password" autoComplete="off" placeholder="필요한 경우 입력" disabled={isRunning} />
                     </label>
                     <div className="connection-model-actions">
                         <button className="secondary-button" type="button" onClick={() => void loadModels()} disabled={!selectedProfile || loadingModels || isRunning}>
