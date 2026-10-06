@@ -4,6 +4,7 @@ import type {BenchmarkSyncLog, BenchmarkSyncPairRequest, BenchmarkSyncPeer, Benc
 
 interface BenchmarkSyncProps {
     onBenchmarkHistoryChanged: () => void;
+    onAgenticHistoryChanged: () => void;
     onSidebarChange: (state: BenchmarkSyncSidebarState) => void;
     refreshKey: number;
 }
@@ -45,6 +46,22 @@ function formatExpiry(value?: string): string {
 }
 
 function syncLogSummary(log: BenchmarkSyncLog): string {
+    const benchmarkParts: string[] = [];
+    if (log.sentBenchmarkCount) benchmarkParts.push(`보냄 ${log.sentBenchmarkCount}`);
+    if (log.receivedBenchmarkCount) benchmarkParts.push(`받음 ${log.receivedBenchmarkCount}`);
+    if (log.duplicateBenchmarkCount) benchmarkParts.push(`중복 ${log.duplicateBenchmarkCount}`);
+    if (log.ignoredBenchmarkCount) benchmarkParts.push(`제외 ${log.ignoredBenchmarkCount}`);
+    if (log.conflictBenchmarkCount) benchmarkParts.push(`충돌 ${log.conflictBenchmarkCount}`);
+    const agenticParts: string[] = [];
+    if (log.sentAgenticEvaluationCount) agenticParts.push(`보냄 ${log.sentAgenticEvaluationCount}`);
+    if (log.receivedAgenticEvaluationCount) agenticParts.push(`받음 ${log.receivedAgenticEvaluationCount}`);
+    if (log.duplicateAgenticEvaluationCount) agenticParts.push(`중복 ${log.duplicateAgenticEvaluationCount}`);
+    if (benchmarkParts.length || agenticParts.length) {
+        return [
+            benchmarkParts.length ? `벤치마크 ${benchmarkParts.join(' · ')}` : '',
+            agenticParts.length ? `에이전트 실험 ${agenticParts.join(' · ')}` : '',
+        ].filter(Boolean).join(' / ');
+    }
     const parts: string[] = [];
     if (log.sentCount) parts.push(`보냄 ${log.sentCount}`);
     if (log.receivedCount) parts.push(`받음 ${log.receivedCount}`);
@@ -63,7 +80,7 @@ function syncDirectionLabel(direction: string): string {
     return direction;
 }
 
-export default function BenchmarkSyncWorkspace({onBenchmarkHistoryChanged, onSidebarChange, refreshKey}: BenchmarkSyncProps) {
+export default function BenchmarkSyncWorkspace({onBenchmarkHistoryChanged, onAgenticHistoryChanged, onSidebarChange, refreshKey}: BenchmarkSyncProps) {
     const [state, setState] = useState<BenchmarkSyncState | null>(null);
     const [deviceName, setDeviceName] = useState('');
     const [address, setAddress] = useState('');
@@ -119,7 +136,10 @@ export default function BenchmarkSyncWorkspace({onBenchmarkHistoryChanged, onSid
         try {
             const next = await operation();
             applyState(next);
-            if (historyChanged) onBenchmarkHistoryChanged();
+            if (historyChanged) {
+                onBenchmarkHistoryChanged();
+                onAgenticHistoryChanged();
+            }
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : String(reason));
         } finally {
@@ -158,9 +178,9 @@ export default function BenchmarkSyncWorkspace({onBenchmarkHistoryChanged, onSid
         <main className="benchmark-sync-workspace">
             <header className="benchmark-sync-header">
                 <div>
-                    <span className="eyebrow">BENCHMARK SYNC</span>
-                    <h1>벤치마크 결과 동기화</h1>
-                    <p>신뢰하는 같은 네트워크의 PC와 결과만 주고받습니다. API 키, 연결 설정, 대화 내용은 전송하지 않습니다.</p>
+                    <span className="eyebrow">RESULT SYNC</span>
+                    <h1>결과 동기화</h1>
+                    <p>신뢰하는 같은 네트워크의 PC와 벤치마크와 에이전트 실험 결과를 주고받습니다. API 키, 연결 설정, 대화 내용은 전송하지 않습니다.</p>
                 </div>
             </header>
 

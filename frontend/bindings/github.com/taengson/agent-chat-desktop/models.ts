@@ -174,6 +174,14 @@ export interface BenchmarkSyncLog {
     "duplicateCount": number;
     "ignoredCount": number;
     "conflictCount": number;
+    "sentBenchmarkCount"?: number;
+    "receivedBenchmarkCount"?: number;
+    "duplicateBenchmarkCount"?: number;
+    "ignoredBenchmarkCount"?: number;
+    "conflictBenchmarkCount"?: number;
+    "sentAgenticEvaluationCount"?: number;
+    "receivedAgenticEvaluationCount"?: number;
+    "duplicateAgenticEvaluationCount"?: number;
     "message"?: string;
 }
 

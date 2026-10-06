@@ -643,6 +643,7 @@ function App() {
     const [agenticHistorySectionOpen, setAgenticHistorySectionOpen] = useState(loadAgenticHistorySectionOpenState);
     const [benchmarkOpenRequestID, setBenchmarkOpenRequestID] = useState<string | null>(null);
     const [benchmarkHistoryRefreshKey, setBenchmarkHistoryRefreshKey] = useState(0);
+    const [agenticHistoryRefreshKey, setAgenticHistoryRefreshKey] = useState(0);
     const [benchmarkToDelete, setBenchmarkToDelete] = useState<ModelBenchmarkSummary | null>(null);
     const [deletingBenchmark, setDeletingBenchmark] = useState(false);
     const [benchmarkDeleteError, setBenchmarkDeleteError] = useState('');
@@ -2202,11 +2203,13 @@ function App() {
                         onSidebarChange={handleAgenticSidebarChange}
                         sidebarAction={agenticSidebarAction}
                         onSidebarActionHandled={handleAgenticSidebarActionHandled}
+                        historyRefreshKey={agenticHistoryRefreshKey}
                     />
                 </main>
             ) : workspace === 'sync' ? (
                 <BenchmarkSyncWorkspace
                     onBenchmarkHistoryChanged={() => setBenchmarkHistoryRefreshKey((current) => current + 1)}
+                    onAgenticHistoryChanged={() => setAgenticHistoryRefreshKey((current) => current + 1)}
                     onSidebarChange={handleSyncSidebarChange}
                     refreshKey={syncRefreshKey}
                 />

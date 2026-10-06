@@ -34,6 +34,7 @@ interface AgenticEvaluationWorkspaceProps {
     onSidebarChange: (state: AgenticEvaluationSidebarState) => void;
     sidebarAction: AgenticEvaluationSidebarAction | null;
     onSidebarActionHandled: (sequence: number) => void;
+    historyRefreshKey: number;
 }
 
 export interface AgenticEvaluationSidebarAction {
@@ -476,6 +477,7 @@ export default function AgenticEvaluationWorkspace({
     onSidebarChange,
     sidebarAction,
     onSidebarActionHandled,
+    historyRefreshKey,
 }: AgenticEvaluationWorkspaceProps) {
     const [profileID, setProfileID] = useState('');
     const [apiKey, setAPIKey] = useState('');
@@ -582,7 +584,7 @@ export default function AgenticEvaluationWorkspace({
     useEffect(() => {
         setLoadingHistory(true);
         void refreshHistory();
-    }, [refreshHistory]);
+    }, [historyRefreshKey, refreshHistory]);
 
     useEffect(() => {
         onBusyChange(running);

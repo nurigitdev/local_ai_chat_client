@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -26,7 +27,10 @@ const (
 	benchmarkSyncPort        = 39391
 	benchmarkSyncCodeTTL     = 10 * time.Minute
 	benchmarkSyncMaxLogCount = 200
-	benchmarkSyncMaxBodySize = 50 << 20
+	// Agentic evaluation traces are substantially larger than the compact
+	// benchmark records. Keep enough room for a complete stored evaluation
+	// while retaining a bounded request size for the local HTTP service.
+	benchmarkSyncMaxBodySize = 128 << 20
 )
 
 // BenchmarkSyncPeer is a trusted device. Its secret tokens are kept separately
@@ -55,18 +59,26 @@ type benchmarkSyncPairSecrets struct {
 }
 
 type BenchmarkSyncLog struct {
-	ID             string `json:"id"`
-	OccurredAt     string `json:"occurredAt"`
-	PeerDeviceID   string `json:"peerDeviceID,omitempty"`
-	PeerDeviceName string `json:"peerDeviceName,omitempty"`
-	Direction      string `json:"direction"`
-	Status         string `json:"status"`
-	SentCount      int    `json:"sentCount"`
-	ReceivedCount  int    `json:"receivedCount"`
-	DuplicateCount int    `json:"duplicateCount"`
-	IgnoredCount   int    `json:"ignoredCount"`
-	ConflictCount  int    `json:"conflictCount"`
-	Message        string `json:"message,omitempty"`
+	ID                              string `json:"id"`
+	OccurredAt                      string `json:"occurredAt"`
+	PeerDeviceID                    string `json:"peerDeviceID,omitempty"`
+	PeerDeviceName                  string `json:"peerDeviceName,omitempty"`
+	Direction                       string `json:"direction"`
+	Status                          string `json:"status"`
+	SentCount                       int    `json:"sentCount"`
+	ReceivedCount                   int    `json:"receivedCount"`
+	DuplicateCount                  int    `json:"duplicateCount"`
+	IgnoredCount                    int    `json:"ignoredCount"`
+	ConflictCount                   int    `json:"conflictCount"`
+	SentBenchmarkCount              int    `json:"sentBenchmarkCount,omitempty"`
+	ReceivedBenchmarkCount          int    `json:"receivedBenchmarkCount,omitempty"`
+	DuplicateBenchmarkCount         int    `json:"duplicateBenchmarkCount,omitempty"`
+	IgnoredBenchmarkCount           int    `json:"ignoredBenchmarkCount,omitempty"`
+	ConflictBenchmarkCount          int    `json:"conflictBenchmarkCount,omitempty"`
+	SentAgenticEvaluationCount      int    `json:"sentAgenticEvaluationCount,omitempty"`
+	ReceivedAgenticEvaluationCount  int    `json:"receivedAgenticEvaluationCount,omitempty"`
+	DuplicateAgenticEvaluationCount int    `json:"duplicateAgenticEvaluationCount,omitempty"`
+	Message                         string `json:"message,omitempty"`
 }
 
 type BenchmarkSyncState struct {
@@ -97,8 +109,9 @@ type benchmarkSyncPersistentState struct {
 }
 
 type benchmarkSyncStore struct {
-	root       string
-	benchmarks *modelBenchmarkStore
+	root               string
+	benchmarks         *modelBenchmarkStore
+	agenticEvaluations *agenticEvaluationStore
 
 	mu       sync.Mutex
 	loaded   bool
@@ -126,15 +139,22 @@ type benchmarkSyncPairStatusPayload struct {
 }
 
 type benchmarkSyncRecordsPayload struct {
-	Version int              `json:"version"`
-	Records []ModelBenchmark `json:"records"`
+	Version            int                 `json:"version"`
+	Records            []ModelBenchmark    `json:"records"`
+	AgenticEvaluations []AgenticEvaluation `json:"agenticEvaluations,omitempty"`
 }
 
-func newBenchmarkSyncStore(root string, benchmarks *modelBenchmarkStore) *benchmarkSyncStore {
+type benchmarkSyncImportOutcome struct {
+	Benchmarks benchmarkRecordImportOutcome
+	Agentic    agenticEvaluationSyncImportOutcome
+}
+
+func newBenchmarkSyncStore(root string, benchmarks *modelBenchmarkStore, agenticEvaluations *agenticEvaluationStore) *benchmarkSyncStore {
 	return &benchmarkSyncStore{
-		root:       root,
-		benchmarks: benchmarks,
-		client:     &http.Client{Timeout: 20 * time.Second},
+		root:               root,
+		benchmarks:         benchmarks,
+		agenticEvaluations: agenticEvaluations,
+		client:             &http.Client{Timeout: 20 * time.Second},
 	}
 }
 
@@ -478,31 +498,26 @@ func (s *benchmarkSyncStore) Run(deviceID, direction string) (BenchmarkSyncState
 		} else if recordsPayload.Version != 1 {
 			runErr = errors.New("상대 PC의 동기화 형식 버전을 지원하지 않습니다")
 		} else {
-			outcome, err := s.importSyncedRecords(recordsPayload.Records)
+			outcome, err := s.importSyncedPayload(recordsPayload)
 			if err != nil {
 				runErr = fmt.Errorf("받기 실패: %w", err)
 			} else {
-				log.ReceivedCount += len(outcome.Imported)
-				log.DuplicateCount += outcome.DuplicateCount
-				log.IgnoredCount += outcome.IgnoredCount
-				log.ConflictCount += outcome.ConflictCount
+				appendReceivedSyncOutcome(&log, outcome)
 			}
 		}
 	}
 	if runErr == nil && (direction == "push" || direction == "bidirectional") {
-		records, err := s.recordsForSync()
+		payload, err := s.recordsPayloadForSync()
 		if err != nil {
 			runErr = fmt.Errorf("보내기 준비 실패: %w", err)
 		} else {
-			var outcome benchmarkRecordImportOutcome
-			err = s.doJSON(http.MethodPost, peer.Address+benchmarkSyncPathPrefix+"/records", peer.Token, benchmarkSyncRecordsPayload{Version: 1, Records: records}, &outcome)
+			var outcome benchmarkSyncImportOutcome
+			err = s.doJSON(http.MethodPost, peer.Address+benchmarkSyncPathPrefix+"/records", peer.Token, payload, &outcome)
 			if err != nil {
 				runErr = fmt.Errorf("보내기 실패: %w", err)
 			} else {
-				log.SentCount = len(records)
-				log.DuplicateCount += outcome.DuplicateCount
-				log.IgnoredCount += outcome.IgnoredCount
-				log.ConflictCount += outcome.ConflictCount
+				appendSentSyncPayload(&log, payload)
+				appendImportOutcome(&log, outcome)
 			}
 		}
 	}
@@ -568,13 +583,15 @@ func (s *benchmarkSyncStore) serveHTTP(writer http.ResponseWriter, request *http
 			writeSyncError(writer, http.StatusUnauthorized, "연결된 PC의 인증 정보가 필요합니다")
 			return
 		}
-		records, err := s.recordsForSync()
+		payload, err := s.recordsPayloadForSync()
 		if err != nil {
 			writeSyncError(writer, http.StatusInternalServerError, err.Error())
 			return
 		}
-		s.appendLog(BenchmarkSyncLog{ID: newConversationID(), OccurredAt: time.Now().UTC().Format(time.RFC3339Nano), PeerDeviceID: peer.DeviceID, PeerDeviceName: peer.DeviceName, Direction: "send", Status: "completed", SentCount: len(records)})
-		writeSyncJSON(writer, http.StatusOK, benchmarkSyncRecordsPayload{Version: 1, Records: records})
+		log := BenchmarkSyncLog{ID: newConversationID(), OccurredAt: time.Now().UTC().Format(time.RFC3339Nano), PeerDeviceID: peer.DeviceID, PeerDeviceName: peer.DeviceName, Direction: "send", Status: "completed"}
+		appendSentSyncPayload(&log, payload)
+		s.appendLog(log)
+		writeSyncJSON(writer, http.StatusOK, payload)
 	case path == benchmarkSyncPathPrefix+"/records" && request.Method == http.MethodPost:
 		peer, ok := s.authorizedPeer(request)
 		if !ok {
@@ -590,12 +607,14 @@ func (s *benchmarkSyncStore) serveHTTP(writer http.ResponseWriter, request *http
 			writeSyncError(writer, http.StatusBadRequest, "지원하지 않는 동기화 형식입니다")
 			return
 		}
-		outcome, err := s.importSyncedRecords(payload.Records)
+		outcome, err := s.importSyncedPayload(payload)
 		if err != nil {
 			writeSyncError(writer, http.StatusBadRequest, err.Error())
 			return
 		}
-		s.appendLog(BenchmarkSyncLog{ID: newConversationID(), OccurredAt: time.Now().UTC().Format(time.RFC3339Nano), PeerDeviceID: peer.DeviceID, PeerDeviceName: peer.DeviceName, Direction: "receive", Status: "completed", ReceivedCount: len(outcome.Imported), DuplicateCount: outcome.DuplicateCount, IgnoredCount: outcome.IgnoredCount, ConflictCount: outcome.ConflictCount})
+		log := BenchmarkSyncLog{ID: newConversationID(), OccurredAt: time.Now().UTC().Format(time.RFC3339Nano), PeerDeviceID: peer.DeviceID, PeerDeviceName: peer.DeviceName, Direction: "receive", Status: "completed"}
+		appendReceivedSyncOutcome(&log, outcome)
+		s.appendLog(log)
 		writeSyncJSON(writer, http.StatusOK, outcome)
 	default:
 		writeSyncError(writer, http.StatusNotFound, "동기화 경로를 찾을 수 없습니다")
@@ -726,7 +745,30 @@ func (s *benchmarkSyncStore) recordsForSync() ([]ModelBenchmark, error) {
 	return records, nil
 }
 
+func (s *benchmarkSyncStore) recordsPayloadForSync() (benchmarkSyncRecordsPayload, error) {
+	records, err := s.recordsForSync()
+	if err != nil {
+		return benchmarkSyncRecordsPayload{}, err
+	}
+	evaluations, err := s.agenticEvaluations.completedRecords()
+	if err != nil {
+		return benchmarkSyncRecordsPayload{}, err
+	}
+	payload := benchmarkSyncRecordsPayload{Version: 1, Records: records, AgenticEvaluations: evaluations}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return benchmarkSyncRecordsPayload{}, err
+	}
+	if len(encoded) > benchmarkSyncMaxBodySize {
+		return benchmarkSyncRecordsPayload{}, errors.New("동기화할 결과가 한 번에 전송할 수 있는 크기를 초과합니다")
+	}
+	return payload, nil
+}
+
 func (s *benchmarkSyncStore) importSyncedRecords(records []ModelBenchmark) (benchmarkRecordImportOutcome, error) {
+	if len(records) == 0 {
+		return benchmarkRecordImportOutcome{}, nil
+	}
 	s.mu.Lock()
 	if err := s.ensureLoadedLocked(); err != nil {
 		s.mu.Unlock()
@@ -757,6 +799,41 @@ func (s *benchmarkSyncStore) importSyncedRecords(records []ModelBenchmark) (benc
 		record.Imported = true
 	}
 	return s.benchmarks.importRecordsFromSource(records, benchmarkSourceSync, ignored)
+}
+
+func (s *benchmarkSyncStore) importSyncedPayload(payload benchmarkSyncRecordsPayload) (benchmarkSyncImportOutcome, error) {
+	benchmarks, err := s.importSyncedRecords(payload.Records)
+	if err != nil {
+		return benchmarkSyncImportOutcome{}, err
+	}
+	agentic, err := s.agenticEvaluations.importSyncedEvaluations(payload.AgenticEvaluations)
+	if err != nil {
+		return benchmarkSyncImportOutcome{}, err
+	}
+	return benchmarkSyncImportOutcome{Benchmarks: benchmarks, Agentic: agentic}, nil
+}
+
+func appendSentSyncPayload(log *BenchmarkSyncLog, payload benchmarkSyncRecordsPayload) {
+	log.SentBenchmarkCount += len(payload.Records)
+	log.SentAgenticEvaluationCount += len(payload.AgenticEvaluations)
+	log.SentCount += len(payload.Records) + len(payload.AgenticEvaluations)
+}
+
+func appendReceivedSyncOutcome(log *BenchmarkSyncLog, outcome benchmarkSyncImportOutcome) {
+	log.ReceivedBenchmarkCount += len(outcome.Benchmarks.Imported)
+	log.ReceivedAgenticEvaluationCount += outcome.Agentic.ImportedCount
+	log.ReceivedCount += len(outcome.Benchmarks.Imported) + outcome.Agentic.ImportedCount
+	appendImportOutcome(log, outcome)
+}
+
+func appendImportOutcome(log *BenchmarkSyncLog, outcome benchmarkSyncImportOutcome) {
+	log.DuplicateBenchmarkCount += outcome.Benchmarks.DuplicateCount
+	log.DuplicateAgenticEvaluationCount += outcome.Agentic.DuplicateCount
+	log.DuplicateCount += outcome.Benchmarks.DuplicateCount + outcome.Agentic.DuplicateCount
+	log.IgnoredBenchmarkCount += outcome.Benchmarks.IgnoredCount
+	log.IgnoredCount += outcome.Benchmarks.IgnoredCount
+	log.ConflictBenchmarkCount += outcome.Benchmarks.ConflictCount
+	log.ConflictCount += outcome.Benchmarks.ConflictCount
 }
 
 func (s *benchmarkSyncStore) completeOutgoingPairing(requestID string, response benchmarkSyncPairStatusPayload) (BenchmarkSyncState, error) {
@@ -988,7 +1065,10 @@ func (s *benchmarkSyncStore) doJSON(method, endpoint, pairingCode string, body a
 		if err != nil {
 			return err
 		}
-		reader = strings.NewReader(string(encoded))
+		if len(encoded) > benchmarkSyncMaxBodySize {
+			return errors.New("동기화할 결과가 한 번에 전송할 수 있는 크기를 초과합니다")
+		}
+		reader = bytes.NewReader(encoded)
 	}
 	request, err := http.NewRequest(method, endpoint, reader)
 	if err != nil {

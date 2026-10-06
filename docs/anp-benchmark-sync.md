@@ -1,6 +1,6 @@
-# ANP 참고와 벤치마크 동기화
+# ANP 참고와 결과 동기화
 
-이 문서는 Agent Chat Desktop의 벤치마크 결과 동기화가 [Agent Network Protocol(ANP)](https://github.com/agent-network-protocol/AgentNetworkProtocol)를 어디까지 참고했는지와, 향후 호환을 확장할 때의 기준을 기록합니다. 현재 구현은 **ANP 구현체나 ANP 호환 프로토콜이 아닙니다**.
+이 문서는 Agent Chat Desktop의 벤치마크·에이전트 실험 결과 동기화가 [Agent Network Protocol(ANP)](https://github.com/agent-network-protocol/AgentNetworkProtocol)를 어디까지 참고했는지와, 향후 호환을 확장할 때의 기준을 기록합니다. 현재 구현은 **ANP 구현체나 ANP 호환 프로토콜이 아닙니다**.
 
 ## ANP의 기본 개념
 
@@ -23,7 +23,7 @@ ANP 저장소 기준으로 `did:wba`, Agent Description, Agent Discovery, 종단
 
 1. **명시적 연결**: 상대 PC 주소와 일회용 코드를 사용하며, 상대 PC의 사용자가 연결 요청을 직접 승인해야 합니다.
 2. **장치 단위 신뢰 관계**: 승인된 각 PC에 독립 인증 토큰을 만들고, 토큰은 소유자 전용 로컬 설정 파일에만 보관합니다.
-3. **명확한 기능 범위**: 완료된 벤치마크 원본 기록만 전송하며 API 키, 연결 인증 정보, 대화, 활동 로그는 전송하지 않습니다.
+3. **명확한 기능 범위**: 완료된 벤치마크 원본 기록과 에이전트 실험 기록만 전송하며 API 키, 연결 인증 정보, 대화, 활동 로그는 전송하지 않습니다.
 4. **버전 있는 구조화 전송**: `/agent-chat/benchmark-sync/v1` 아래의 JSON 요청·응답으로 페어링과 결과 전송을 구분합니다.
 5. **재전송 안전성**: 원본 장치 ID·원본 벤치마크 ID와 결과 지문을 사용해 순환 동기화의 중복을 막고, 내용이 다른 동일 원본은 충돌로 남깁니다.
 
@@ -32,9 +32,9 @@ ANP 저장소 기준으로 `did:wba`, Agent Description, Agent Discovery, 종단
 | 항목 | 구현 위치 | 현재 동작 |
 |---|---|---|
 | 연결·인증·HTTP 수신 | `benchmark_sync.go` | 일회용 코드 요청, 승인·거절, 장치별 인증, `records` 송수신 |
-| 기록 출처·병합 우선순위 | `model_benchmark_store.go`, `benchmark_report.go` | `local > report > sync`, 동일 원본 내용 충돌 보존 |
+| 기록 출처·병합 우선순위 | `model_benchmark_store.go`, `benchmark_report.go`, `agentic_evaluation_store.go` | 벤치마크의 `local > report > sync` 우선순위와 에이전트 실험 전체 기록 지문 중복 처리 |
 | 동기화 작업 화면 | `frontend/src/BenchmarkSync.tsx` | 주소·코드 입력, 승인, 동기화, 활동 기록 |
-| 작업 공간·기록 목록 | `frontend/src/App.tsx`, `frontend/src/ModelBenchmark.tsx` | 세로 작업 공간 메뉴와 동기화된 벤치마크 목록 |
+| 작업 공간·기록 목록 | `frontend/src/App.tsx`, `frontend/src/ModelBenchmark.tsx`, `frontend/src/AgenticEvaluation.tsx` | 세로 작업 공간 메뉴와 동기화된 벤치마크·에이전트 실험 목록 |
 
 ## 현재 범위와 보안 한계
 
@@ -48,6 +48,6 @@ ANP 저장소 기준으로 `did:wba`, Agent Description, Agent Discovery, 종단
 2. **Agent Description 게시**: 동기화 가능 데이터, 버전, 크기 제한, 보안 요구 사항을 Agent Description으로 게시합니다.
 3. **발견 도입**: 사용자가 주소를 직접 옮기지 않아도, 같은 조직 또는 허용된 범위에서 Agent Discovery로 후보를 찾습니다.
 4. **암호화된 전송**: TLS와 ANP 메시징의 종단 간 암호화 프로필을 검토해 전송 내용·인증 정보를 보호합니다.
-5. **기능 협상**: 메타 프로토콜이 안정화되면 `benchmark-result` 전송 인터페이스와 스키마 버전을 협상하도록 검토합니다.
+5. **기능 협상**: 메타 프로토콜이 안정화되면 벤치마크·에이전트 실험 결과 전송 인터페이스와 스키마 버전을 협상하도록 검토합니다.
 
 이 단계들은 ANP의 출시 상태, Go 생태계의 지원 수준, 사용자 경험과 보안 검토를 거친 뒤 별도 작업으로 도입합니다.

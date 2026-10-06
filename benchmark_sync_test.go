@@ -47,10 +47,12 @@ func TestBenchmarkImportSourcePriorityAndOriginConflict(t *testing.T) {
 func TestBenchmarkSyncPairingAndPush(t *testing.T) {
 	storeA := newModelBenchmarkStore(t.TempDir())
 	storeB := newModelBenchmarkStore(t.TempDir())
+	agenticA := newAgenticEvaluationStore(t.TempDir())
+	agenticB := newAgenticEvaluationStore(t.TempDir())
 	syncRootA := t.TempDir()
 	syncRootB := t.TempDir()
-	syncA := newBenchmarkSyncStore(syncRootA, storeA)
-	syncB := newBenchmarkSyncStore(syncRootB, storeB)
+	syncA := newBenchmarkSyncStore(syncRootA, storeA, agenticA)
+	syncB := newBenchmarkSyncStore(syncRootB, storeB, agenticB)
 	t.Cleanup(func() { _ = syncA.Close(); _ = syncB.Close() })
 
 	if _, err := syncA.State(); err != nil {
@@ -85,7 +87,7 @@ func TestBenchmarkSyncPairingAndPush(t *testing.T) {
 	if err := syncB.Close(); err != nil {
 		t.Fatalf("syncB Close() error = %v", err)
 	}
-	syncB = newBenchmarkSyncStore(syncRootB, storeB)
+	syncB = newBenchmarkSyncStore(syncRootB, storeB, agenticB)
 	stateB, err = syncB.State()
 	if err != nil || len(stateB.Peers) != 1 {
 		t.Fatalf("reopened syncB State() = %#v, %v", stateB, err)
@@ -99,6 +101,10 @@ func TestBenchmarkSyncPairingAndPush(t *testing.T) {
 	if _, err := storeB.Save(created); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
+	agentic := agenticReportFixture(t, "agentic-b", "model-b")
+	if _, err := agenticB.Create(agentic); err != nil {
+		t.Fatalf("agentic Create() error = %v", err)
+	}
 	if _, err := syncB.Run(stateB.Peers[0].DeviceID, "push"); err != nil {
 		t.Fatalf("Run(push) error = %v", err)
 	}
@@ -106,10 +112,29 @@ func TestBenchmarkSyncPairingAndPush(t *testing.T) {
 	if err != nil || len(summaries) != 1 || summaries[0].Source != benchmarkSourceSync || summaries[0].OriginDeviceName != "테스트 PC B" {
 		t.Fatalf("synced summaries = %#v, %v", summaries, err)
 	}
+	agenticSummaries, err := agenticA.List()
+	if err != nil || len(agenticSummaries) != 1 || agenticSummaries[0].ID != "agentic-b" {
+		t.Fatalf("synced agentic summaries = %#v, %v", agenticSummaries, err)
+	}
+	stateA, err = syncA.State()
+	if err != nil || len(stateA.Logs) == 0 || stateA.Logs[0].ReceivedAgenticEvaluationCount != 1 {
+		t.Fatalf("agentic sync log = %#v, %v", stateA.Logs, err)
+	}
+	if _, err := syncB.Run(stateB.Peers[0].DeviceID, "push"); err != nil {
+		t.Fatalf("second Run(push) error = %v", err)
+	}
+	agenticSummaries, err = agenticA.List()
+	if err != nil || len(agenticSummaries) != 1 {
+		t.Fatalf("duplicate agentic sync summaries = %#v, %v", agenticSummaries, err)
+	}
+	stateB, err = syncB.State()
+	if err != nil || len(stateB.Logs) == 0 || stateB.Logs[0].DuplicateAgenticEvaluationCount != 1 {
+		t.Fatalf("duplicate agentic sync log = %#v, %v", stateB.Logs, err)
+	}
 }
 
 func TestBenchmarkSyncResetSessionClearsConnectionState(t *testing.T) {
-	syncStore := newBenchmarkSyncStore(t.TempDir(), newModelBenchmarkStore(t.TempDir()))
+	syncStore := newBenchmarkSyncStore(t.TempDir(), newModelBenchmarkStore(t.TempDir()), newAgenticEvaluationStore(t.TempDir()))
 	t.Cleanup(func() { _ = syncStore.Close() })
 	initial, err := syncStore.State()
 	if err != nil {

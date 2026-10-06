@@ -237,13 +237,14 @@ type App struct {
 
 func NewApp() *App {
 	benchmarks := newModelBenchmarkStore("")
+	agenticEvaluations := newAgenticEvaluationStore("")
 	return &App{
 		cancels:            make(map[string]context.CancelFunc),
 		conversations:      newConversationStore(""),
 		profiles:           newConnectionProfileStore(""),
 		benchmarks:         benchmarks,
-		agenticEvaluations: newAgenticEvaluationStore(""),
-		sync:               newBenchmarkSyncStore("", benchmarks),
+		agenticEvaluations: agenticEvaluations,
+		sync:               newBenchmarkSyncStore("", benchmarks, agenticEvaluations),
 	}
 }
 

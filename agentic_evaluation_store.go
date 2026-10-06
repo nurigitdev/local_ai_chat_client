@@ -150,6 +150,13 @@ type AgenticEvaluationSummary struct {
 	PassedTargetCount int      `json:"passedTargetCount"`
 }
 
+// agenticEvaluationSyncImportOutcome is kept separate from report import
+// because peer synchronization needs aggregate counts for its activity log.
+type agenticEvaluationSyncImportOutcome struct {
+	ImportedCount  int
+	DuplicateCount int
+}
+
 type agenticEvaluationStore struct {
 	root string
 	mu   sync.Mutex
@@ -263,6 +270,76 @@ func (s *agenticEvaluationStore) List() ([]AgenticEvaluationSummary, error) {
 	}
 	sort.Slice(summaries, func(i, j int) bool { return summaries[i].UpdatedAt > summaries[j].UpdatedAt })
 	return summaries, nil
+}
+
+// completedRecords returns only final, successfully completed queues. Running
+// and interrupted/cancelled queues are local execution state, not portable
+// evaluation results.
+func (s *agenticEvaluationStore) completedRecords() ([]AgenticEvaluation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	directory, err := s.directory()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, fmt.Errorf("에이전트 실험 기록을 읽을 수 없습니다: %w", err)
+	}
+	records := make([]AgenticEvaluation, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+		contents, readErr := os.ReadFile(filepath.Join(directory, entry.Name()))
+		if readErr != nil {
+			return nil, fmt.Errorf("에이전트 실험 기록을 읽을 수 없습니다: %w", readErr)
+		}
+		evaluation, parseErr := parseAgenticEvaluation(contents)
+		if parseErr != nil {
+			if errors.Is(parseErr, errLegacyAgenticEvaluation) {
+				continue
+			}
+			return nil, fmt.Errorf("에이전트 실험 기록 %q의 형식이 올바르지 않습니다: %w", entry.Name(), parseErr)
+		}
+		if evaluation.Status == "completed" {
+			records = append(records, evaluation)
+		}
+	}
+	return records, nil
+}
+
+func (s *agenticEvaluationStore) importSyncedEvaluations(evaluations []AgenticEvaluation) (agenticEvaluationSyncImportOutcome, error) {
+	if len(evaluations) == 0 {
+		return agenticEvaluationSyncImportOutcome{}, nil
+	}
+
+	prepared := make([]AgenticEvaluation, len(evaluations))
+	for index, evaluation := range evaluations {
+		evaluation = normalizeAgenticEvaluation(evaluation)
+		if evaluation.Status != "completed" {
+			return agenticEvaluationSyncImportOutcome{}, fmt.Errorf("%d번째 에이전트 실험 결과가 완료된 기록이 아닙니다", index+1)
+		}
+		if err := validateAgenticEvaluation(evaluation); err != nil {
+			return agenticEvaluationSyncImportOutcome{}, fmt.Errorf("%d번째 에이전트 실험 결과를 가져올 수 없습니다: %w", index+1, err)
+		}
+		prepared[index] = evaluation
+	}
+
+	result := agenticEvaluationSyncImportOutcome{}
+	for index, evaluation := range prepared {
+		imported, err := s.importEvaluation(evaluation)
+		if err != nil {
+			return agenticEvaluationSyncImportOutcome{}, fmt.Errorf("%d번째 에이전트 실험 결과를 가져올 수 없습니다: %w", index+1, err)
+		}
+		if imported.Duplicate {
+			result.DuplicateCount++
+			continue
+		}
+		result.ImportedCount++
+	}
+	return result, nil
 }
 
 func (s *agenticEvaluationStore) Delete(id string) error {
