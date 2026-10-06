@@ -24,7 +24,10 @@ import BenchmarkSyncWorkspace, {
     emptyBenchmarkSyncSidebar,
     type BenchmarkSyncSidebarState,
 } from './BenchmarkSync';
-import AgenticEvaluationWorkspace from './AgenticEvaluation';
+import AgenticEvaluationWorkspace, {
+    type AgenticEvaluationSidebarAction,
+    type AgenticEvaluationSidebarState,
+} from './AgenticEvaluation';
 import OpenRouterModelPicker, {isOpenRouterURL} from './OpenRouterModelPicker';
 import {messagesForModel} from './chatContext';
 import {
@@ -113,6 +116,7 @@ const maxAttachmentTotalFileSize = 12 * 1024 * 1024;
 const maxAttachmentContentSize = 240 * 1024;
 const maxAttachmentTotalContentSize = 512 * 1024;
 const benchmarkHistorySectionStateStorageKey = 'agent-chat.benchmark-history-section-open';
+const agenticHistorySectionStateStorageKey = 'agent-chat.agentic-history-section-open';
 const emptyBenchmarkSidebar: ModelBenchmarkSidebarState = {
     model: '',
     profileName: '',
@@ -124,6 +128,13 @@ const emptyBenchmarkSidebar: ModelBenchmarkSidebarState = {
     imported: [],
     synchronized: [],
     isHistoryLoading: false,
+};
+const emptyAgenticSidebar: AgenticEvaluationSidebarState = {
+    sections: [],
+    activeSectionID: '',
+    history: [],
+    loadingHistory: true,
+    selectedEvaluationID: '',
 };
 
 function loadBenchmarkHistorySectionOpenState(): BenchmarkHistorySectionOpenState {
@@ -140,6 +151,15 @@ function loadBenchmarkHistorySectionOpenState(): BenchmarkHistorySectionOpenStat
         };
     } catch {
         return fallback;
+    }
+}
+
+function loadAgenticHistorySectionOpenState(): boolean {
+    if (typeof window === 'undefined') return false;
+    try {
+        return window.localStorage.getItem(agenticHistorySectionStateStorageKey) === 'true';
+    } catch {
+        return false;
     }
 }
 
@@ -612,12 +632,15 @@ function App() {
     const [benchmarkBusy, setBenchmarkBusy] = useState(false);
     const [agenticBusy, setAgenticBusy] = useState(false);
     const [benchmarkSidebar, setBenchmarkSidebar] = useState<ModelBenchmarkSidebarState>(emptyBenchmarkSidebar);
+    const [agenticSidebar, setAgenticSidebar] = useState<AgenticEvaluationSidebarState>(emptyAgenticSidebar);
+    const [agenticSidebarAction, setAgenticSidebarAction] = useState<AgenticEvaluationSidebarAction | null>(null);
     const [syncSidebar, setSyncSidebar] = useState<BenchmarkSyncSidebarState>(emptyBenchmarkSyncSidebar);
     const [syncRefreshKey, setSyncRefreshKey] = useState(0);
     const [syncMonitoringEnabled, setSyncMonitoringEnabled] = useState(false);
     const [syncSidebarError, setSyncSidebarError] = useState('');
     const [syncSidebarAction, setSyncSidebarAction] = useState('');
     const [benchmarkHistorySectionOpen, setBenchmarkHistorySectionOpen] = useState<BenchmarkHistorySectionOpenState>(loadBenchmarkHistorySectionOpenState);
+    const [agenticHistorySectionOpen, setAgenticHistorySectionOpen] = useState(loadAgenticHistorySectionOpenState);
     const [benchmarkOpenRequestID, setBenchmarkOpenRequestID] = useState<string | null>(null);
     const [benchmarkHistoryRefreshKey, setBenchmarkHistoryRefreshKey] = useState(0);
     const [benchmarkToDelete, setBenchmarkToDelete] = useState<ModelBenchmarkSummary | null>(null);
@@ -684,6 +707,7 @@ function App() {
     const attachmentInputRef = useRef<HTMLInputElement | null>(null);
     const modelLoadPromiseRef = useRef<ReturnType<typeof ChatService.ListModels> | null>(null);
     const modelLoadSequenceRef = useRef(0);
+    const agenticSidebarActionSequenceRef = useRef(0);
 
     const selectedSavedConnectionProfile = useMemo(
         () => savedConnectionProfiles.find((profile) => profile.id === selectedSavedConnectionProfileID),
@@ -720,12 +744,40 @@ function App() {
         }
     }, [benchmarkHistorySectionOpen]);
 
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(agenticHistorySectionStateStorageKey, String(agenticHistorySectionOpen));
+        } catch {
+            // The sidebar remains usable when local storage is unavailable.
+        }
+    }, [agenticHistorySectionOpen]);
+
     const handleBenchmarkBusyChange = useCallback((nextBusy: boolean) => {
         setBenchmarkBusy(nextBusy);
     }, []);
 
     const handleAgenticBusyChange = useCallback((nextBusy: boolean) => {
         setAgenticBusy(nextBusy);
+    }, []);
+
+    const handleAgenticSidebarChange = useCallback((nextState: AgenticEvaluationSidebarState) => {
+        setAgenticSidebar(nextState);
+    }, []);
+
+    const navigateToAgenticResult = useCallback((sectionID: string) => {
+        setAgenticSidebar((current) => ({...current, activeSectionID: sectionID}));
+        document.getElementById(sectionID)?.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }, []);
+
+    const requestAgenticSidebarAction = useCallback((kind: 'open' | 'delete', id: string) => {
+        if (agenticSidebarAction || agenticBusy) return;
+        if (kind === 'delete' && !window.confirm('이 실행 기록을 삭제할까요?')) return;
+        agenticSidebarActionSequenceRef.current += 1;
+        setAgenticSidebarAction({kind, id, sequence: agenticSidebarActionSequenceRef.current});
+    }, [agenticBusy, agenticSidebarAction]);
+
+    const handleAgenticSidebarActionHandled = useCallback((sequence: number) => {
+        setAgenticSidebarAction((current) => current?.sequence === sequence ? null : current);
     }, []);
 
     const handleBenchmarkSidebarChange = useCallback((nextState: ModelBenchmarkSidebarState) => {
@@ -2008,9 +2060,60 @@ function App() {
                 ) : workspace === 'agentic' ? (
                     <section className="agentic-sidebar" aria-label="에이전트 실험 안내">
                         <div className="section-heading"><span>에이전트 실험</span></div>
-                        {agenticBusy ? <strong>순차 실행 중</strong> : <strong>가상 도구 평가</strong>}
-                        <p>모델이 문서와 업무 기록 환경에서 도구를 선택하고 목표 상태를 만드는 과정을 확인합니다.</p>
-                        <small>실제 파일·셸·네트워크에는 접근하지 않습니다.</small>
+                        {agenticSidebar.sections.length > 0 ? <>
+                            <strong>{agenticBusy ? '순차 실행 중' : '실험 결과'}</strong>
+                            <nav className="agentic-sidebar-toc" aria-label="실험 결과 목차">
+                                {agenticSidebar.sections.map((section) => <button
+                                    className={agenticSidebar.activeSectionID === section.id ? 'active' : ''}
+                                    key={section.id}
+                                    type="button"
+                                    aria-current={agenticSidebar.activeSectionID === section.id ? 'location' : undefined}
+                                    onClick={() => navigateToAgenticResult(section.id)}
+                                >{section.label}</button>)}
+                            </nav>
+                        </> : <>
+                            {agenticBusy ? <strong>순차 실행 중</strong> : <strong>가상 도구 평가</strong>}
+                            <p>모델이 문서와 업무 기록 환경에서 도구를 선택하고 목표 상태를 만드는 과정을 확인합니다.</p>
+                            <small>실제 파일·셸·네트워크에는 접근하지 않습니다.</small>
+                        </>}
+                        <section className={`agentic-sidebar-history ${agenticHistorySectionOpen ? 'expanded' : 'collapsed'}`} aria-label="저장된 실행">
+                            <button
+                                className="agentic-sidebar-history-heading"
+                                type="button"
+                                aria-expanded={agenticHistorySectionOpen}
+                                aria-controls="agentic-sidebar-history-list"
+                                onClick={() => setAgenticHistorySectionOpen((current) => !current)}
+                            >
+                                <span aria-hidden="true">{agenticHistorySectionOpen ? '⌄' : '›'}</span>
+                                <strong>저장된 실행</strong>
+                                <small>{agenticSidebar.loadingHistory ? '불러오는 중…' : `${agenticSidebar.history.length}개`}</small>
+                            </button>
+                            <div className="agentic-sidebar-history-list" id="agentic-sidebar-history-list" hidden={!agenticHistorySectionOpen}>
+                                {!agenticSidebar.loadingHistory && agenticSidebar.history.length === 0 && <small>아직 저장된 실행이 없습니다.</small>}
+                                {agenticSidebar.history.map((record) => <div className={`agentic-sidebar-history-item ${agenticSidebar.selectedEvaluationID === record.id ? 'active' : ''}`} key={record.id}>
+                                    <button
+                                        className="agentic-sidebar-history-open"
+                                        type="button"
+                                        title={`${record.models?.join(', ') || '모델 없음'} · ${record.profileName}`}
+                                        aria-current={agenticSidebar.selectedEvaluationID === record.id ? 'page' : undefined}
+                                        disabled={Boolean(agenticSidebarAction) || agenticBusy}
+                                        onClick={() => requestAgenticSidebarAction('open', record.id)}
+                                    >
+                                        <strong>{record.models?.join(', ') || '모델 없음'}</strong>
+                                        <span>{record.profileName} · {(record.suites || []).join(' · ') || '기존 시나리오'}</span>
+                                        <small>{record.status === 'running' ? '실행 중' : record.status === 'cancelled' ? '취소됨' : '완료'} · 통과 {record.passedTargetCount}/{record.targetCount} · {formatUpdatedAt(record.updatedAt)}</small>
+                                    </button>
+                                    <button
+                                        className="agentic-sidebar-history-delete"
+                                        type="button"
+                                        aria-label={`${record.models?.join(', ') || '모델 없음'} 실행 기록 삭제`}
+                                        title="실행 기록 삭제"
+                                        disabled={Boolean(agenticSidebarAction) || agenticBusy || record.status === 'running'}
+                                        onClick={() => requestAgenticSidebarAction('delete', record.id)}
+                                    >×</button>
+                                </div>)}
+                            </div>
+                        </section>
                     </section>
                 ) : (
                     <section className="sync-sidebar" aria-label="결과 동기화">
@@ -2096,6 +2199,9 @@ function App() {
                         openRouterModelIDs={openRouterModelIDs}
                         onOpenRouterModelIDsChange={applyOpenRouterModelIDs}
                         onBusyChange={handleAgenticBusyChange}
+                        onSidebarChange={handleAgenticSidebarChange}
+                        sidebarAction={agenticSidebarAction}
+                        onSidebarActionHandled={handleAgenticSidebarActionHandled}
                     />
                 </main>
             ) : workspace === 'sync' ? (

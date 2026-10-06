@@ -1,4 +1,4 @@
-import {type KeyboardEvent, useCallback, useEffect, useMemo, useState} from 'react';
+import {type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {Dialogs, Events} from '@wailsio/runtime';
 import {App as ChatService} from '../bindings/github.com/taengson/agent-chat-desktop';
 import type {
@@ -31,6 +31,28 @@ interface AgenticEvaluationWorkspaceProps {
     openRouterModelIDs: string[];
     onOpenRouterModelIDsChange: (modelIDs: string[]) => void;
     onBusyChange: (busy: boolean) => void;
+    onSidebarChange: (state: AgenticEvaluationSidebarState) => void;
+    sidebarAction: AgenticEvaluationSidebarAction | null;
+    onSidebarActionHandled: (sequence: number) => void;
+}
+
+export interface AgenticEvaluationSidebarAction {
+    kind: 'open' | 'delete';
+    id: string;
+    sequence: number;
+}
+
+export interface AgenticEvaluationSidebarSection {
+    id: string;
+    label: string;
+}
+
+export interface AgenticEvaluationSidebarState {
+    sections: AgenticEvaluationSidebarSection[];
+    activeSectionID: string;
+    history: AgenticEvaluationSummary[];
+    loadingHistory: boolean;
+    selectedEvaluationID: string;
 }
 
 type ModelAggregate = {
@@ -451,6 +473,9 @@ export default function AgenticEvaluationWorkspace({
     openRouterModelIDs,
     onOpenRouterModelIDsChange,
     onBusyChange,
+    onSidebarChange,
+    sidebarAction,
+    onSidebarActionHandled,
 }: AgenticEvaluationWorkspaceProps) {
     const [profileID, setProfileID] = useState('');
     const [apiKey, setAPIKey] = useState('');
@@ -474,6 +499,8 @@ export default function AgenticEvaluationWorkspace({
     const [exportMessage, setExportMessage] = useState('');
     const [importing, setImporting] = useState(false);
     const [importMessage, setImportMessage] = useState('');
+    const [activeResultSectionID, setActiveResultSectionID] = useState('');
+    const handledSidebarActionSequence = useRef<number | null>(null);
 
     const selectedProfile = useMemo(
         () => profiles.find((profile) => profile.id === profileID),
@@ -490,6 +517,21 @@ export default function AgenticEvaluationWorkspace({
     const reasoningWarning = reasoningEffortWarning(reasoningEffort);
     const plannedRunCount = selectedModels.length * selectedScenarioIDs.length * maxAttempts;
     const runCountOverLimit = plannedRunCount > maxAgenticEvaluationRuns;
+    const resultSidebarSections = useMemo<AgenticEvaluationSidebarSection[]>(() => {
+        if (view !== 'result' || !evaluation) return [];
+        const targetGroups = groupTargetsBySuite(passTargets(evaluation));
+        return [
+            ...targetGroups.map((group, index) => ({
+                id: `agentic-model-pass-${index}`,
+                label: `${group.suite} 모델별 통과 시간`,
+            })),
+            ...targetGroups.map((group, index) => ({
+                id: `agentic-scenario-results-${index}`,
+                label: `${group.suite} 시나리오별 최종 결과`,
+            })),
+            {id: 'agentic-run-results', label: '실행별 결과'},
+        ];
+    }, [evaluation, view]);
 
     const refreshHistory = useCallback(async () => {
         try {
@@ -546,6 +588,78 @@ export default function AgenticEvaluationWorkspace({
         onBusyChange(running);
         return () => onBusyChange(false);
     }, [onBusyChange, running]);
+
+    useEffect(() => {
+        const availableSectionIDs = new Set(resultSidebarSections.map((section) => section.id));
+        setActiveResultSectionID((current) => (
+            availableSectionIDs.has(current) ? current : resultSidebarSections[0]?.id || ''
+        ));
+    }, [resultSidebarSections]);
+
+    useEffect(() => {
+        onSidebarChange({
+            sections: resultSidebarSections,
+            activeSectionID: activeResultSectionID,
+            history,
+            loadingHistory,
+            selectedEvaluationID: view === 'result' ? evaluation?.id || '' : '',
+        });
+    }, [activeResultSectionID, evaluation?.id, history, loadingHistory, onSidebarChange, resultSidebarSections, view]);
+
+    useEffect(() => () => onSidebarChange({
+        sections: [], activeSectionID: '', history: [], loadingHistory: false, selectedEvaluationID: '',
+    }), [onSidebarChange]);
+
+    useEffect(() => {
+        if (!sidebarAction || handledSidebarActionSequence.current === sidebarAction.sequence) return;
+        handledSidebarActionSequence.current = sidebarAction.sequence;
+        const {id, kind, sequence} = sidebarAction;
+        void (async () => {
+            try {
+                setError('');
+                if (kind === 'open') {
+                    const opened = await ChatService.OpenAgenticEvaluation(id);
+                    setEvaluation(opened);
+                    setView('result');
+                    document.querySelector<HTMLElement>('.benchmark-panel')?.scrollTo(0, 0);
+                } else {
+                    await ChatService.DeleteAgenticEvaluation(id);
+                    if (evaluation?.id === id) {
+                        setEvaluation(null);
+                        setView('home');
+                        document.querySelector<HTMLElement>('.benchmark-panel')?.scrollTo(0, 0);
+                    }
+                    await refreshHistory();
+                }
+            } catch (reason) {
+                setError(reason instanceof Error ? reason.message : String(reason));
+            } finally {
+                onSidebarActionHandled(sequence);
+            }
+        })();
+    }, [evaluation?.id, onSidebarActionHandled, refreshHistory, sidebarAction]);
+
+    useEffect(() => {
+        if (resultSidebarSections.length === 0 || typeof IntersectionObserver === 'undefined') return undefined;
+        const scrollPanel = document.querySelector<HTMLElement>('.benchmark-panel');
+        const sections = resultSidebarSections
+            .map((section) => document.getElementById(section.id))
+            .filter((section): section is HTMLElement => section !== null);
+        if (sections.length === 0) return undefined;
+
+        const observer = new IntersectionObserver((entries) => {
+            const visible = entries
+                .filter((entry) => entry.isIntersecting)
+                .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top);
+            if (visible[0]) setActiveResultSectionID(visible[0].target.id);
+        }, {
+            root: scrollPanel,
+            rootMargin: '-48px 0px -62% 0px',
+            threshold: 0.01,
+        });
+        sections.forEach((section) => observer.observe(section));
+        return () => observer.disconnect();
+    }, [resultSidebarSections]);
 
     useEffect(() => {
         const listener = Events.On(agenticEvaluationEventName, (event) => {
@@ -658,26 +772,6 @@ export default function AgenticEvaluationWorkspace({
             setError(reason instanceof Error ? reason.message : String(reason));
         } finally {
             setCancelling(false);
-        }
-    }
-
-    async function openEvaluation(id: string) {
-        const opened = await refreshEvaluation(id);
-        if (opened) setView('result');
-    }
-
-    async function deleteEvaluation(id: string) {
-        if (running || !window.confirm('이 실행 기록을 삭제할까요?')) return;
-        try {
-            setError('');
-            await ChatService.DeleteAgenticEvaluation(id);
-            if (evaluation?.id === id) {
-                setEvaluation(null);
-                setView('home');
-            }
-            await refreshHistory();
-        } catch (reason) {
-            setError(reason instanceof Error ? reason.message : String(reason));
         }
     }
 
@@ -829,10 +923,10 @@ export default function AgenticEvaluationWorkspace({
                     <span>{feedbackRetryLabel(evaluation.feedbackRetry)}</span>
                 </div>
             </section>
-            {targetGroups.map((group) => {
+            {targetGroups.map((group, index) => {
                 const aggregate = aggregateByModel(group.targets);
                 const environmentAggregate = aggregateByEnvironment(group.targets);
-                return <section className="agentic-comparison-card agentic-suite-results" key={group.suite}>
+                return <section className="agentic-comparison-card agentic-suite-results" id={`agentic-model-pass-${index}`} key={group.suite}>
                     <div className="agentic-card-heading"><div><span className="eyebrow">MODEL COMPARISON · {group.suite}</span><h2>{group.suite} 모델별 통과 시간</h2></div><small>대기열 시간은 제외하고 실제 실행 시간만 합산합니다.</small></div>
                     <div className="agentic-comparison-table" role="table" aria-label={`${group.suite} 모델별 에이전트 실험 결과`}>
                         <div className="agentic-comparison-row header" role="row"><span>모델</span><span>통과</span><span>총 시도</span><span>평균 통과 시간</span><span>토큰</span></div>
@@ -845,7 +939,7 @@ export default function AgenticEvaluationWorkspace({
                     </div>
                 </section>;
             })}
-            {targetGroups.map((group) => <section className="agentic-comparison-card agentic-suite-results" key={`${group.suite}-targets`}>
+            {targetGroups.map((group, index) => <section className="agentic-comparison-card agentic-suite-results" id={`agentic-scenario-results-${index}`} key={`${group.suite}-targets`}>
                 <div className="agentic-card-heading"><div><span className="eyebrow">TIME TO PASS · {group.suite}</span><h2>{group.suite} 시나리오별 최종 결과</h2></div><small>통과한 조합은 즉시 종료하고, 미통과 조합은 실제 시도 횟수를 남깁니다.</small></div>
                 <div className="agentic-pass-target-table" role="table" aria-label={`${group.suite} 시나리오별 통과 결과`}>
                     <div className="agentic-pass-target-row header" role="row"><span>모델</span><span>시나리오</span><span>최종 결과</span><span>시도 기록</span><span>누적 실행 시간</span></div>
@@ -854,7 +948,7 @@ export default function AgenticEvaluationWorkspace({
                     </div>)}
                 </div>
             </section>)}
-            <section className="agentic-runs-section">
+            <section className="agentic-runs-section" id="agentic-run-results">
                 <div className="agentic-card-heading"><div><span className="eyebrow">RUN TRACE</span><h2>실행별 결과</h2></div><small>도구 호출, 복구 시도, 최종 상태 평가를 확인할 수 있습니다.</small></div>
                 <div className="agentic-run-list">{runs.map(renderRun)}</div>
             </section>
@@ -911,13 +1005,6 @@ export default function AgenticEvaluationWorkspace({
                 <button className="primary-button" type="button" onClick={() => void startEvaluation()} disabled={starting || runCountOverLimit || !selectedProfile || selectedModels.length === 0 || selectedScenarioIDs.length === 0}>{starting ? '실험 준비 중…' : '에이전트 실험 시작'}</button>
                 {runCountOverLimit && <p className="agentic-warning">한 대기열은 최대 {maxAgenticEvaluationRuns}회까지 실행할 수 있습니다. 모델, 시나리오 또는 최대 시도 횟수를 줄여 주세요.</p>}
             </article>
-        </section>
-        <section className="agentic-history-card">
-            <div className="agentic-card-heading"><div><span className="eyebrow">HISTORY</span><h2>저장된 실행</h2></div><small>{loadingHistory ? '불러오는 중…' : `${history.length}/80개`}</small></div>
-            {history.length === 0 && !loadingHistory ? <p className="agentic-empty">아직 저장된 에이전트 실험이 없습니다.</p> : <div className="agentic-history-list">{history.map((record) => <article key={record.id}>
-                <button type="button" onClick={() => void openEvaluation(record.id)}><strong>{record.models?.join(', ') || '모델 없음'}</strong><span>{record.profileName} · {(record.suites || []).join(' · ') || '기존 시나리오'} · 시나리오 {record.scenarioCount}개 · 최대 {record.maxAttempts}회 · {feedbackRetryLabel(record.feedbackRetry)}</span><small>{evaluationStatusText(record.status)} · 통과 {record.passedTargetCount}/{record.targetCount} · 실제 시도 {record.attemptedRunCount}회 · {formatTime(record.updatedAt)}</small></button>
-                <button className="text-button danger" type="button" onClick={() => void deleteEvaluation(record.id)} disabled={record.status === 'running'}>삭제</button>
-            </article>)}</div>}
         </section>
         <OpenRouterModelPicker
             open={openRouterPickerOpen}
