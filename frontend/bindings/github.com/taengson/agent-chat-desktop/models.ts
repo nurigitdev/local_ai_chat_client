@@ -59,6 +59,7 @@ export interface AgenticEvaluationResult {
     "summary": string;
     "requirements"?: string[] | null;
     "violations"?: string[] | null;
+    "violationDetails"?: AgenticViolationDetail[] | null;
 }
 
 export interface AgenticEvaluationRun {
@@ -113,6 +114,7 @@ export interface AgenticEvaluationStartRequest {
     "maxAttempts": number;
     "feedbackRetry": boolean;
     "reasoningEffort"?: string;
+    "timeoutPreset"?: string;
 }
 
 export interface AgenticEvaluationSummary {
@@ -148,6 +150,10 @@ export interface AgenticExecutionRules {
     "toolOutputLimitBytes": number;
     "runTimeoutSeconds": number;
     "actionTimeoutSeconds": number;
+    "timeoutMode"?: string;
+    "timeoutPreset"?: string;
+    "firstOutputTimeoutSeconds"?: number;
+    "outputIdleTimeoutSeconds"?: number;
 }
 
 /**
@@ -160,6 +166,16 @@ export interface AgenticRetryFeedback {
     "summary": string;
     "requirements"?: string[] | null;
     "violations"?: string[] | null;
+}
+
+/**
+ * A precise grading target, independent of the human-readable explanation.
+ */
+export interface AgenticViolationDetail {
+    "violationIndex": number;
+    "resource"?: string;
+    "toolName": string;
+    "kind": string;
 }
 
 export interface BenchmarkSyncLog {

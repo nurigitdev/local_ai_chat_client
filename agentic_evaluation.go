@@ -21,13 +21,15 @@ const (
 	agenticToolDefinitionVersion = "virtual-tools-v1"
 	agenticGraderVersion         = "state-grader-v1"
 	maxAgenticEvaluationRuns     = 240
-	maxAgenticActions            = 12
+	maxAgenticActions            = 24
 	maxAgenticInvalidActions     = 2
 	maxAgenticContextBytes       = 96 * 1024
 	maxAgenticResponseBytes      = 32 * 1024
 	maxAgenticToolOutputBytes    = 16 * 1024
-	agenticEvaluationTimeout     = 10 * time.Minute
-	agenticActionTimeout         = 2 * time.Minute
+	agenticStandardRunTimeout    = time.Hour
+	agenticLocalRunTimeout       = 2 * time.Hour
+	agenticTimeoutStandard       = "standard"
+	agenticTimeoutSlowLocal      = "slow_local"
 )
 
 type AgenticEvaluationEvent struct {
@@ -89,7 +91,12 @@ func (a *App) StartAgenticEvaluation(request AgenticEvaluationStartRequest) (Age
 	request.ProfileName = normalizeProfileName(request.ProfileName)
 	request.ModelIDs = normalizeAgenticStrings(request.ModelIDs)
 	request.ScenarioIDs = normalizeAgenticStrings(request.ScenarioIDs)
+	request.TimeoutPreset = strings.TrimSpace(request.TimeoutPreset)
 	reasoningEffort, err := normalizeReasoningEffort(request.ReasoningEffort)
+	if err != nil {
+		return AgenticEvaluation{}, err
+	}
+	rules, err := agenticExecutionRulesForPreset(request.TimeoutPreset)
 	if err != nil {
 		return AgenticEvaluation{}, err
 	}
@@ -126,7 +133,7 @@ func (a *App) StartAgenticEvaluation(request AgenticEvaluationStartRequest) (Age
 		MaxAttempts:     request.MaxAttempts,
 		FeedbackRetry:   request.FeedbackRetry,
 		ReasoningEffort: reasoningEffort,
-		ExecutionRules:  defaultAgenticExecutionRules(),
+		ExecutionRules:  rules,
 		Status:          "running",
 		Runs:            runs,
 	}
@@ -284,9 +291,11 @@ func (a *App) executeAgenticRun(ctx context.Context, client *openai.Client, eval
 		_ = a.persistAgenticEvaluation(evaluation, "run_finished", run)
 		return
 	}
-	runContext, cancel := context.WithTimeout(ctx, agenticEvaluationTimeout)
-	defer cancel()
-	history := make([]openai.Message, 0, maxAgenticActions*2)
+	runStartedAt, parseErr := time.Parse(time.RFC3339Nano, run.StartedAt)
+	if parseErr != nil {
+		runStartedAt = time.Now()
+	}
+	history := make([]openai.Message, 0, evaluation.ExecutionRules.MaxActions*2)
 	if run.RetryFeedback != nil {
 		history = append(history, openai.Message{Role: "user", Content: agenticRetryFeedbackMessage(*run.RetryFeedback)})
 	}
@@ -295,9 +304,14 @@ func (a *App) executeAgenticRun(ctx context.Context, client *openai.Client, eval
 	var firstTokenAt time.Time
 	invalidActions := 0
 
-	for step := 1; step <= maxAgenticActions; step++ {
-		if runContext.Err() != nil {
-			finishAgenticRun(run, agenticRunStatusForContext(runContext), false, "time_limit", "실행 시간이 제한을 넘었습니다", environment.StateChanges(), "실행 시간이 제한을 넘었습니다")
+	for step := 1; step <= evaluation.ExecutionRules.MaxActions; step++ {
+		if ctx.Err() != nil {
+			finishAgenticRun(run, "cancelled", false, "cancelled", "실행이 취소되었습니다", environment.StateChanges(), "실행이 취소되었습니다")
+			_ = a.persistAgenticEvaluation(evaluation, "run_finished", run)
+			return
+		}
+		if time.Since(runStartedAt) >= time.Duration(evaluation.ExecutionRules.RunTimeoutSeconds)*time.Second {
+			finishAgenticGradedRun(run, "time_limit", environment, "실행 전체 시간 제한에 도달했습니다")
 			_ = a.persistAgenticEvaluation(evaluation, "run_finished", run)
 			return
 		}
@@ -307,21 +321,16 @@ func (a *App) executeAgenticRun(ctx context.Context, client *openai.Client, eval
 			_ = a.persistAgenticEvaluation(evaluation, "run_finished", run)
 			return
 		}
-		response, requestErr := requestAgenticAction(runContext, client, run.Model, evaluation.ReasoningEffort, messages)
+		response, requestErr := requestAgenticAction(ctx, client, run.Model, evaluation.ReasoningEffort, messages, evaluation.ExecutionRules)
 		if requestErr != nil {
-			if errors.Is(requestErr, context.Canceled) || runContext.Err() != nil {
-				status := agenticRunStatusForContext(runContext)
-				outcome := "cancelled"
-				message := "실행이 취소되었습니다"
-				if status == "time_limit" {
-					outcome = "time_limit"
-					message = "실행 시간이 제한을 넘었습니다"
-				}
-				finishAgenticRun(run, status, false, outcome, message, environment.StateChanges(), message)
+			if ctx.Err() != nil || errors.Is(requestErr, context.Canceled) {
+				finishAgenticRun(run, "cancelled", false, "cancelled", "실행이 취소되었습니다", environment.StateChanges(), "실행이 취소되었습니다")
+			} else if errors.Is(requestErr, errAgenticStreamTimeout) {
+				finishAgenticGradedRun(run, "time_limit", environment, requestErr.Error())
 			} else if errors.Is(requestErr, errAgenticResponseLimit) {
 				finishAgenticRun(run, "context_limit", false, "response_limit", "한 행동의 응답이 허용 크기를 넘었습니다", environment.StateChanges(), requestErr.Error())
 			} else {
-				finishAgenticRun(run, "connection_error", false, "connection_error", "모델 요청에 실패했습니다", environment.StateChanges(), friendlyError(requestErr).Error())
+				finishAgenticGradedRun(run, "connection_error", environment, friendlyError(requestErr).Error())
 			}
 			_ = a.persistAgenticEvaluation(evaluation, "run_finished", run)
 			return
@@ -378,7 +387,7 @@ func (a *App) executeAgenticRun(ctx context.Context, client *openai.Client, eval
 			return
 		}
 	}
-	finishAgenticRun(run, "action_limit", false, "action_limit", "최대 행동 횟수에 도달했습니다", environment.StateChanges(), "최대 행동 횟수에 도달했습니다")
+	finishAgenticGradedRun(run, "action_limit", environment, "최대 행동 횟수에 도달했습니다")
 	_ = a.persistAgenticEvaluation(evaluation, "run_finished", run)
 }
 
@@ -459,22 +468,64 @@ func (a *App) releaseAgenticEvaluation(id string) {
 }
 
 func defaultAgenticExecutionRules() AgenticExecutionRules {
+	rules, _ := agenticExecutionRulesForPreset(agenticTimeoutStandard)
+	return rules
+}
+
+func legacyAgenticExecutionRules() AgenticExecutionRules {
+	rules := defaultAgenticExecutionRules()
+	rules.MaxActions = 12
+	rules.TimeoutMode = ""
+	rules.TimeoutPreset = ""
+	rules.FirstOutputTimeoutSeconds = 0
+	rules.OutputIdleTimeoutSeconds = 0
+	rules.RunTimeoutSeconds = 10 * 60
+	rules.ActionTimeoutSeconds = 2 * 60
+	return rules
+}
+
+func agenticExecutionRulesForPreset(preset string) (AgenticExecutionRules, error) {
+	if preset == "" {
+		preset = agenticTimeoutStandard
+	}
+	var firstOutput, outputIdle, runTimeout time.Duration
+	switch preset {
+	case agenticTimeoutStandard:
+		firstOutput, outputIdle, runTimeout = benchmarkFirstOutputTimeout, benchmarkOutputIdleTimeout, agenticStandardRunTimeout
+	case agenticTimeoutSlowLocal:
+		firstOutput, outputIdle, runTimeout = chatFirstOutputTimeout, chatOutputIdleTimeout, agenticLocalRunTimeout
+	default:
+		return AgenticExecutionRules{}, errors.New("올바르지 않은 에이전트 실험 시간 프리셋입니다")
+	}
 	return AgenticExecutionRules{
 		ActionFormatVersion: agenticActionFormatVersion, SystemPromptVersion: agenticSystemPromptVersion,
 		ToolDefinitionVersion: agenticToolDefinitionVersion, GraderVersion: agenticGraderVersion,
 		MaxActions: maxAgenticActions, MaxInvalidActions: maxAgenticInvalidActions,
 		ContextLimitBytes: maxAgenticContextBytes, ResponseLimitBytes: maxAgenticResponseBytes,
 		ToolOutputLimitBytes: maxAgenticToolOutputBytes,
-		RunTimeoutSeconds:    int(agenticEvaluationTimeout.Seconds()), ActionTimeoutSeconds: int(agenticActionTimeout.Seconds()),
-	}
+		RunTimeoutSeconds:    int(runTimeout.Seconds()), TimeoutMode: "activity", TimeoutPreset: preset,
+		FirstOutputTimeoutSeconds: int(firstOutput.Seconds()), OutputIdleTimeoutSeconds: int(outputIdle.Seconds()),
+	}, nil
 }
 
 func validateAgenticExecutionRules(rules AgenticExecutionRules) error {
 	if rules.ActionFormatVersion == "" || rules.SystemPromptVersion == "" || rules.ToolDefinitionVersion == "" || rules.GraderVersion == "" {
 		return errors.New("에이전트 실험 실행 규칙 버전이 없습니다")
 	}
-	if rules.MaxActions < 1 || rules.MaxInvalidActions < 0 || rules.ContextLimitBytes < 1 || rules.ResponseLimitBytes < 1 || rules.ToolOutputLimitBytes < 1 || rules.RunTimeoutSeconds < 1 || rules.ActionTimeoutSeconds < 1 {
+	if rules.MaxActions < 1 || rules.MaxActions > 64 || rules.MaxInvalidActions < 0 || rules.ContextLimitBytes < 1 || rules.ResponseLimitBytes < 1 || rules.ToolOutputLimitBytes < 1 || rules.RunTimeoutSeconds < 1 {
 		return errors.New("에이전트 실험 실행 제한이 올바르지 않습니다")
+	}
+	switch rules.TimeoutMode {
+	case "":
+		if rules.ActionTimeoutSeconds < 1 {
+			return errors.New("기존 에이전트 실험 행동 제한이 올바르지 않습니다")
+		}
+	case "activity":
+		if rules.FirstOutputTimeoutSeconds < 1 || rules.OutputIdleTimeoutSeconds < 1 || rules.ActionTimeoutSeconds != 0 || (rules.TimeoutPreset != agenticTimeoutStandard && rules.TimeoutPreset != agenticTimeoutSlowLocal) {
+			return errors.New("에이전트 실험 출력 시간 제한이 올바르지 않습니다")
+		}
+	default:
+		return errors.New("올바르지 않은 에이전트 실험 시간 제한 방식입니다")
 	}
 	return nil
 }
@@ -495,6 +546,12 @@ func finishAgenticRun(run *AgenticEvaluationRun, status string, passed bool, out
 	}
 }
 
+func finishAgenticGradedRun(run *AgenticEvaluationRun, status string, environment agenticEnvironment, errorMessage string) {
+	result := environment.Grade("")
+	finishAgenticRun(run, status, result.Passed, result.Outcome, result.Summary, environment.StateChanges(), errorMessage)
+	run.Result = &result
+}
+
 func applyAgenticRunStats(run *AgenticEvaluationRun, usage *TokenUsage, firstTokenAt time.Time) {
 	if usage != nil && (usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0) {
 		run.Usage = &TokenUsage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens}
@@ -505,6 +562,8 @@ func applyAgenticRunStats(run *AgenticEvaluationRun, usage *TokenUsage, firstTok
 	}
 }
 
+var errAgenticStreamTimeout = errors.New("모델 응답 시간 제한")
+
 func agenticRunStatusForContext(ctx context.Context) string {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "time_limit"
@@ -512,16 +571,26 @@ func agenticRunStatusForContext(ctx context.Context) string {
 	return "cancelled"
 }
 
-func requestAgenticAction(ctx context.Context, client *openai.Client, model, reasoningEffort string, messages []openai.Message) (agenticModelResponse, error) {
-	stepContext, cancel := context.WithTimeout(ctx, agenticActionTimeout)
+func requestAgenticAction(ctx context.Context, client *openai.Client, model, reasoningEffort string, messages []openai.Message, rules AgenticExecutionRules) (agenticModelResponse, error) {
+	stepContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	startedAt := time.Now()
+	watchdog := newStreamWatchdog(startedAt, cancel, streamTimeoutPolicy{
+		firstOutputTimeout: time.Duration(rules.FirstOutputTimeoutSeconds) * time.Second,
+		outputIdleTimeout:  time.Duration(rules.OutputIdleTimeoutSeconds) * time.Second,
+		checkInterval:      time.Second,
+		firstOutputFailure: fmt.Sprintf("모델 출력이 %d분 안에 시작되지 않았습니다", rules.FirstOutputTimeoutSeconds/60),
+		outputIdleFailure:  fmt.Sprintf("모델 출력이 %d초 동안 멈췄습니다", rules.OutputIdleTimeoutSeconds),
+	})
+	go watchdog.watch(stepContext)
+	defer watchdog.stop()
 	var firstTokenAt time.Time
 	var builder strings.Builder
 	overLimit := false
 	var usage *TokenUsage
 	err := client.StreamChat(stepContext, openai.ChatRequest{Model: model, Messages: messages, ReasoningEffort: reasoningEffort}, func(chunk openai.StreamChunk) {
 		if chunk.Delta != "" {
+			watchdog.recordOutput()
 			if firstTokenAt.IsZero() {
 				firstTokenAt = time.Now()
 			}
@@ -536,8 +605,15 @@ func requestAgenticAction(ctx context.Context, client *openai.Client, model, rea
 			usage = &TokenUsage{PromptTokens: chunk.Usage.PromptTokens, CompletionTokens: chunk.Usage.CompletionTokens, TotalTokens: chunk.Usage.TotalTokens}
 		}
 	})
+	watchdog.stop()
 	if overLimit {
 		return agenticModelResponse{}, errAgenticResponseLimit
+	}
+	if ctx.Err() != nil {
+		return agenticModelResponse{}, context.Canceled
+	}
+	if timeoutErr := watchdog.timeoutError(); timeoutErr != nil {
+		return agenticModelResponse{}, fmt.Errorf("%w: %s", errAgenticStreamTimeout, timeoutErr)
 	}
 	if err != nil {
 		return agenticModelResponse{}, err

@@ -634,6 +634,7 @@ function App() {
     const [benchmarkSidebar, setBenchmarkSidebar] = useState<ModelBenchmarkSidebarState>(emptyBenchmarkSidebar);
     const [agenticSidebar, setAgenticSidebar] = useState<AgenticEvaluationSidebarState>(emptyAgenticSidebar);
     const [agenticSidebarAction, setAgenticSidebarAction] = useState<AgenticEvaluationSidebarAction | null>(null);
+    const [agenticEvaluationToDelete, setAgenticEvaluationToDelete] = useState<string | null>(null);
     const [syncSidebar, setSyncSidebar] = useState<BenchmarkSyncSidebarState>(emptyBenchmarkSyncSidebar);
     const [syncRefreshKey, setSyncRefreshKey] = useState(0);
     const [syncMonitoringEnabled, setSyncMonitoringEnabled] = useState(false);
@@ -772,10 +773,20 @@ function App() {
 
     const requestAgenticSidebarAction = useCallback((kind: 'open' | 'delete', id: string) => {
         if (agenticSidebarAction || agenticBusy) return;
-        if (kind === 'delete' && !window.confirm('이 실행 기록을 삭제할까요?')) return;
+        if (kind === 'delete') {
+            setAgenticEvaluationToDelete(id);
+            return;
+        }
         agenticSidebarActionSequenceRef.current += 1;
         setAgenticSidebarAction({kind, id, sequence: agenticSidebarActionSequenceRef.current});
     }, [agenticBusy, agenticSidebarAction]);
+
+    function confirmAgenticEvaluationDelete() {
+        if (!agenticEvaluationToDelete || agenticSidebarAction || agenticBusy) return;
+        agenticSidebarActionSequenceRef.current += 1;
+        setAgenticSidebarAction({kind: 'delete', id: agenticEvaluationToDelete, sequence: agenticSidebarActionSequenceRef.current});
+        setAgenticEvaluationToDelete(null);
+    }
 
     const handleAgenticSidebarActionHandled = useCallback((sequence: number) => {
         setAgenticSidebarAction((current) => current?.sequence === sequence ? null : current);
@@ -2447,6 +2458,22 @@ function App() {
                             </button>
                             <button type="button" className="dialog-delete-button" onClick={() => void confirmConversationDelete()} disabled={deletingConversation}>
                                 {deletingConversation ? '삭제 중…' : '삭제'}
+                            </button>
+                        </div>
+                    </section>
+                </div>
+            )}
+            {agenticEvaluationToDelete && (
+                <div className="dialog-backdrop" role="presentation">
+                    <section className="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-agentic-evaluation-title">
+                        <h2 id="delete-agentic-evaluation-title">에이전트 실험 기록을 삭제할까요?</h2>
+                        <p>선택한 에이전트 실험 기록과 저장된 결과를 삭제합니다. 이 작업은 되돌릴 수 없습니다.</p>
+                        <div className="dialog-actions">
+                            <button type="button" className="dialog-cancel-button" onClick={() => setAgenticEvaluationToDelete(null)}>
+                                취소
+                            </button>
+                            <button type="button" className="dialog-delete-button" onClick={confirmAgenticEvaluationDelete} disabled={Boolean(agenticSidebarAction) || agenticBusy}>
+                                삭제 확인
                             </button>
                         </div>
                     </section>

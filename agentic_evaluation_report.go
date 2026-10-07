@@ -105,6 +105,7 @@ func parseAgenticEvaluationReportPayload(encoded []byte) (AgenticEvaluation, err
 	if err := validateAgenticEvaluation(evaluation); err != nil {
 		return AgenticEvaluation{}, fmt.Errorf("보고서의 에이전트 실험 결과가 올바르지 않습니다: %w", err)
 	}
+	regradeLegacyInterruptedRuns(&evaluation)
 	if evaluation.Status == "running" {
 		return AgenticEvaluation{}, errors.New("실행 중인 에이전트 실험 결과는 가져올 수 없습니다")
 	}
@@ -119,6 +120,7 @@ func (s *agenticEvaluationStore) importEvaluation(evaluation AgenticEvaluation) 
 	if err := validateAgenticEvaluation(evaluation); err != nil {
 		return AgenticEvaluationImportResult{}, err
 	}
+	regradeLegacyInterruptedRuns(&evaluation)
 	if evaluation.Status == "running" {
 		return AgenticEvaluationImportResult{}, errors.New("실행 중인 에이전트 실험 결과는 가져올 수 없습니다")
 	}

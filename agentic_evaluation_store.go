@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ type AgenticEvaluationStartRequest struct {
 	MaxAttempts     int               `json:"maxAttempts"`
 	FeedbackRetry   bool              `json:"feedbackRetry"`
 	ReasoningEffort string            `json:"reasoningEffort,omitempty"`
+	TimeoutPreset   string            `json:"timeoutPreset,omitempty"`
 }
 
 type AgenticEvaluation struct {
@@ -58,17 +60,21 @@ type AgenticEvaluation struct {
 // AgenticExecutionRules records the shared evaluation contract. It makes a
 // stored result interpretable even after defaults evolve in a later release.
 type AgenticExecutionRules struct {
-	ActionFormatVersion   string `json:"actionFormatVersion"`
-	SystemPromptVersion   string `json:"systemPromptVersion"`
-	ToolDefinitionVersion string `json:"toolDefinitionVersion"`
-	GraderVersion         string `json:"graderVersion"`
-	MaxActions            int    `json:"maxActions"`
-	MaxInvalidActions     int    `json:"maxInvalidActions"`
-	ContextLimitBytes     int    `json:"contextLimitBytes"`
-	ResponseLimitBytes    int    `json:"responseLimitBytes"`
-	ToolOutputLimitBytes  int    `json:"toolOutputLimitBytes"`
-	RunTimeoutSeconds     int    `json:"runTimeoutSeconds"`
-	ActionTimeoutSeconds  int    `json:"actionTimeoutSeconds"`
+	ActionFormatVersion       string `json:"actionFormatVersion"`
+	SystemPromptVersion       string `json:"systemPromptVersion"`
+	ToolDefinitionVersion     string `json:"toolDefinitionVersion"`
+	GraderVersion             string `json:"graderVersion"`
+	MaxActions                int    `json:"maxActions"`
+	MaxInvalidActions         int    `json:"maxInvalidActions"`
+	ContextLimitBytes         int    `json:"contextLimitBytes"`
+	ResponseLimitBytes        int    `json:"responseLimitBytes"`
+	ToolOutputLimitBytes      int    `json:"toolOutputLimitBytes"`
+	RunTimeoutSeconds         int    `json:"runTimeoutSeconds"`
+	ActionTimeoutSeconds      int    `json:"actionTimeoutSeconds"`
+	TimeoutMode               string `json:"timeoutMode,omitempty"`
+	TimeoutPreset             string `json:"timeoutPreset,omitempty"`
+	FirstOutputTimeoutSeconds int    `json:"firstOutputTimeoutSeconds,omitempty"`
+	OutputIdleTimeoutSeconds  int    `json:"outputIdleTimeoutSeconds,omitempty"`
 }
 
 type AgenticEvaluationRun struct {
@@ -116,11 +122,20 @@ type AgenticEvaluationChange struct {
 }
 
 type AgenticEvaluationResult struct {
-	Passed       bool     `json:"passed"`
-	Outcome      string   `json:"outcome"`
-	Summary      string   `json:"summary"`
-	Requirements []string `json:"requirements,omitempty"`
-	Violations   []string `json:"violations,omitempty"`
+	Passed           bool                     `json:"passed"`
+	Outcome          string                   `json:"outcome"`
+	Summary          string                   `json:"summary"`
+	Requirements     []string                 `json:"requirements,omitempty"`
+	Violations       []string                 `json:"violations,omitempty"`
+	ViolationDetails []AgenticViolationDetail `json:"violationDetails,omitempty"`
+}
+
+// A precise grading target, independent of the human-readable explanation.
+type AgenticViolationDetail struct {
+	ViolationIndex int    `json:"violationIndex"`
+	Resource       string `json:"resource,omitempty"`
+	ToolName       string `json:"toolName"`
+	Kind           string `json:"kind"`
 }
 
 // AgenticRetryFeedback is the state-grader result supplied to a retry. The
@@ -324,6 +339,7 @@ func (s *agenticEvaluationStore) importSyncedEvaluations(evaluations []AgenticEv
 		if err := validateAgenticEvaluation(evaluation); err != nil {
 			return agenticEvaluationSyncImportOutcome{}, fmt.Errorf("%d번째 에이전트 실험 결과를 가져올 수 없습니다: %w", index+1, err)
 		}
+		regradeLegacyInterruptedRuns(&evaluation)
 		prepared[index] = evaluation
 	}
 
@@ -515,7 +531,7 @@ func normalizeAgenticEvaluation(evaluation AgenticEvaluation) AgenticEvaluation 
 	evaluation.ProfileBaseURL = strings.TrimSpace(evaluation.ProfileBaseURL)
 	evaluation.ReasoningEffort = strings.TrimSpace(evaluation.ReasoningEffort)
 	if evaluation.ExecutionRules.ActionFormatVersion == "" {
-		evaluation.ExecutionRules = defaultAgenticExecutionRules()
+		evaluation.ExecutionRules = legacyAgenticExecutionRules()
 	}
 	evaluation.Status = strings.TrimSpace(evaluation.Status)
 	evaluation.ModelIDs = normalizeAgenticStrings(evaluation.ModelIDs)
@@ -687,7 +703,72 @@ func parseAgenticEvaluation(contents []byte) (AgenticEvaluation, error) {
 	if err := validateAgenticEvaluation(evaluation); err != nil {
 		return AgenticEvaluation{}, err
 	}
+	regradeLegacyInterruptedRuns(&evaluation)
 	return evaluation, nil
+}
+
+// Old interrupted runs stored an operational error as a failed grade. Rebuild
+// their virtual state only when every recorded tool result still matches.
+func regradeLegacyInterruptedRuns(evaluation *AgenticEvaluation) {
+	for index := range evaluation.Runs {
+		run := &evaluation.Runs[index]
+		if run.Result == nil || run.Result.Passed || run.FinishedAt == "" {
+			continue
+		}
+		if (run.Status != "connection_error" || run.Result.Outcome != "connection_error") &&
+			(run.Status != "time_limit" || run.Result.Outcome != "time_limit") &&
+			(run.Status != "action_limit" || run.Result.Outcome != "action_limit") {
+			continue
+		}
+		if run.StartedAt == "" {
+			run.Result = nil
+			continue
+		}
+		result, ok := replayAgenticRunGrade(*run, evaluation.ExecutionRules.MaxActions)
+		if !ok {
+			run.Result = nil
+			continue
+		}
+		run.Result = &result
+	}
+}
+
+func replayAgenticRunGrade(run AgenticEvaluationRun, maxActions int) (AgenticEvaluationResult, bool) {
+	scenario, found := findAgenticScenario(run.ScenarioID)
+	if !found || run.ScenarioVersion != scenario.Version || run.GraderVersion != agenticGraderVersion || run.InitialStateHash == "" {
+		return AgenticEvaluationResult{}, false
+	}
+	environment := scenario.Build(run.Variant)
+	if environment.InitialStateHash() != run.InitialStateHash {
+		return AgenticEvaluationResult{}, false
+	}
+	lastStep := 0
+	for _, action := range run.Actions {
+		if action.Step <= lastStep || action.Step > maxActions || action.Type == "complete" {
+			return AgenticEvaluationResult{}, false
+		}
+		lastStep = action.Step
+		if action.Type == "invalid" {
+			continue
+		}
+		if action.Type != "tool" {
+			return AgenticEvaluationResult{}, false
+		}
+		execution := environment.Execute(action.ToolName, json.RawMessage(action.Arguments))
+		if len([]byte(execution.Output)) > maxAgenticToolOutputBytes {
+			execution = toolError("도구 결과가 허용 크기를 넘었습니다")
+		}
+		if execution.Status != action.Status || trimAgenticRecord(execution.Output) != action.Output {
+			return AgenticEvaluationResult{}, false
+		}
+	}
+	if run.Status == "action_limit" && lastStep != maxActions {
+		return AgenticEvaluationResult{}, false
+	}
+	if !slices.Equal(environment.StateChanges(), run.StateChanges) {
+		return AgenticEvaluationResult{}, false
+	}
+	return environment.Grade(""), true
 }
 
 func agenticEvaluationSummary(evaluation AgenticEvaluation) AgenticEvaluationSummary {

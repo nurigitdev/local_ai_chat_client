@@ -4856,6 +4856,7 @@ button:disabled {
 .agentic-target-status { font-weight: 750; }
 .agentic-target-status.passed { color: #5e7a4c; }
 .agentic-target-status.not-passed { color: #a4574b; }
+.agentic-target-status.ungraded { color: #8a7560; }
 .agentic-target-status.running { color: #46758c; }
 .agentic-target-status.cancelled { color: #777770; }
 
@@ -4943,14 +4944,25 @@ button:disabled {
 }
 
 .agentic-result.failed { border-color: #eed4cd; background: #fff8f6; }
+.agentic-result.ungraded { border-color: #e2dccf; background: #faf8f3; }
 .agentic-result strong { color: #587347; font-size: 11px; }
 .agentic-result.failed strong { color: #a2594f; }
+.agentic-result.ungraded strong { color: #8a7560; }
 .agentic-result p,
 .agentic-result ul { margin: 4px 0 0; color: #687060; font-size: 10px; line-height: 1.55; }
 .agentic-result.failed p,
 .agentic-result.failed ul { color: #8f625b; }
 .agentic-result ul { padding-left: 16px; }
-.agentic-violations { color: #a3564b !important; }
+.agentic-violations { margin: 5px 0 0; padding-left: 18px; color: #a3564b !important; font-size: 10px; line-height: 1.55; }
+.agentic-violations > li + li { margin-top: 8px; }
+.agentic-evidence-links { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.agentic-evidence-links button { padding: 3px 7px; border: 1px solid #dec7bd; border-radius: 5px; background: #fff; color: #875548; font-size: 10px; cursor: pointer; }
+.agentic-evidence-links small { color: #8a7560; font-size: 10px; }
+.agentic-action-list li.agentic-evidence-related,
+.agentic-change-list article.agentic-evidence-related { border-color: #d7b5a5; background: #fff8f2; }
+.agentic-evidence-related:focus { outline: 2px solid #b8785b; outline-offset: 2px; }
+.agentic-evidence-badge { display: block; margin-bottom: 4px; color: #985c45; font-size: 10px; font-weight: 700; }
+.agentic-change-list .agentic-evidence-badge { grid-column: 1 / -1; }
 
 .agentic-run-error { margin: 10px 0; color: #a2584d; font-size: 10px; line-height: 1.5; }
 

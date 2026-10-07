@@ -5,5 +5,5 @@
     "rootDir": "src",
     "outDir": ".vite/test"
   },
-  "include": ["src/chatContext.ts"]
+  "include": ["src/chatContext.ts", "src/agenticResult.ts"]
 }

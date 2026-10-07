@@ -330,26 +330,34 @@ func (e *documentEnvironment) Execute(name string, arguments json.RawMessage) ag
 }
 
 func (e *documentEnvironment) Grade(_ string) AgenticEvaluationResult {
-	violations := make([]string, 0)
+	findings := agenticViolationSet{}
 	for path, minimumAttempts := range e.requiredReads {
 		if e.readAttempts[path] < minimumAttempts {
-			violations = append(violations, path+" 자료를 필요한 횟수만큼 확인하지 않았습니다")
+			if e.readAttempts[path] == 0 {
+				findings.add(path, "read_file", "read", path+" 파일을 조회하지 않았습니다.")
+			} else {
+				findings.add(path, "read_file", "read", path+" 파일 조회를 다시 시도하지 않았습니다.")
+			}
 		}
 	}
 	for path, expected := range e.expectedJSON {
 		actual, exists := e.documentContents(path)
-		if !exists || strings.TrimSpace(actual) == "" {
-			violations = append(violations, path+" 결과 파일이 없습니다")
+		if !exists {
+			findings.add(path, "write_file", "state", path+" 결과 파일이 없습니다.")
+			continue
+		}
+		if strings.TrimSpace(actual) == "" {
+			findings.add(path, "write_file", "state", path+" 결과 파일이 비어 있습니다.")
 			continue
 		}
 		if !sameJSON(actual, expected) {
-			violations = append(violations, path+"의 결과가 규정과 맞지 않습니다")
+			findings.add(path, "write_file", "state", agenticJSONDifferences(path, actual, expected)...)
 		}
 	}
-	if len(violations) > 0 {
-		return AgenticEvaluationResult{Passed: false, Outcome: "goal_not_met", Summary: "최종 결과 파일이 채점 조건을 만족하지 않습니다.", Violations: violations}
+	if len(findings.Violations) > 0 {
+		return AgenticEvaluationResult{Passed: false, Outcome: "goal_not_met", Summary: "아래 자료 조회 또는 결과 작성 조건을 충족하지 못했습니다.", Violations: findings.Violations, ViolationDetails: findings.Details}
 	}
-	return AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "가상 작업 공간의 결과 파일이 모든 채점 조건을 만족합니다.", Requirements: []string{"필요 자료 조회", "결과 파일 작성", "상태 기반 채점 통과"}}
+	return AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "필요한 자료를 조회했고 결과 파일의 내용이 정답과 일치합니다.", Requirements: []string{"필요 자료 조회", "결과 파일 작성", "결과 내용 일치"}}
 }
 
 func (e *documentEnvironment) StateChanges() []AgenticEvaluationChange {
@@ -511,22 +519,28 @@ func (e *recordEnvironment) Execute(name string, arguments json.RawMessage) agen
 }
 
 func (e *recordEnvironment) Grade(_ string) AgenticEvaluationResult {
-	violations := make([]string, 0)
+	findings := agenticViolationSet{}
 	for id, minimumAttempts := range e.requiredReads {
 		if e.readAttempts[id] < minimumAttempts {
-			violations = append(violations, id+" 기록을 필요한 횟수만큼 확인하지 않았습니다")
+			if e.readAttempts[id] == 0 {
+				findings.add(id, "get_record", "read", id+" 기록을 조회하지 않았습니다.")
+			} else {
+				findings.add(id, "get_record", "read", id+" 기록을 다시 조회하지 않았습니다.")
+			}
 		}
 	}
 	for id, expected := range e.expected {
 		actual, exists := e.recordFor(id)
-		if !exists || !sameRecordState(actual, expected) {
-			violations = append(violations, id+" 기록의 최종 상태가 채점 조건과 다릅니다")
+		if !exists {
+			findings.add(id, "update_record", "state", id+" 기록을 찾을 수 없습니다.")
+		} else if !sameRecordState(actual, expected) {
+			findings.add(id, "update_record", "state", agenticRecordDifferences(id, actual, expected)...)
 		}
 	}
-	if len(violations) > 0 {
-		return AgenticEvaluationResult{Passed: false, Outcome: "goal_not_met", Summary: "업무 기록의 최종 상태가 채점 조건을 만족하지 않습니다.", Violations: violations}
+	if len(findings.Violations) > 0 {
+		return AgenticEvaluationResult{Passed: false, Outcome: "goal_not_met", Summary: "아래 기록 조회 또는 처리 조건을 충족하지 못했습니다.", Violations: findings.Violations, ViolationDetails: findings.Details}
 	}
-	return AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "업무 기록의 최종 상태가 모든 채점 조건을 만족합니다.", Requirements: []string{"필요 기록 조회", "필요한 상태 변경", "금지된 변경 없음"}}
+	return AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "필요한 기록을 조회했고 최종 처리 결과가 정답과 일치합니다.", Requirements: []string{"필요 기록 조회", "최종 처리 결과 일치"}}
 }
 
 // sameRecordState compares the business state. Note is an optional agent

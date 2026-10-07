@@ -12,6 +12,7 @@ import type {
     SavedConnectionProfile,
 } from '../bindings/github.com/taengson/agent-chat-desktop/models';
 import OpenRouterModelPicker, {isOpenRouterURL} from './OpenRouterModelPicker';
+import {hasStateGrade, targetCompletionStatus, ungradedReason, violationEvidence, type AgenticTargetStatus} from './agenticResult';
 import {
     reasoningEffortLabel,
     reasoningEffortOptions,
@@ -66,7 +67,8 @@ type ModelAggregate = {
     outputTokens: number;
 };
 
-type PassTargetStatus = 'pending' | 'running' | 'passed' | 'not-passed' | 'cancelled';
+type PassTargetStatus = AgenticTargetStatus;
+type AgenticTimeoutPreset = 'standard' | 'slow_local';
 
 type PassTarget = {
     key: string;
@@ -119,9 +121,21 @@ function runStatusText(status: string): string {
     return labels[status] || status || '알 수 없음';
 }
 
+function timeoutPresetLabel(preset?: string): string {
+    return preset === 'slow_local' ? '느린 로컬 모델' : '표준';
+}
+
+function executionTimeoutText(evaluation: AgenticEvaluation): string {
+    const rules = evaluation.executionRules;
+    if (rules.timeoutMode === 'activity') {
+        return `${timeoutPresetLabel(rules.timeoutPreset)} · 첫 출력 ${rules.firstOutputTimeoutSeconds! / 60}분 · 출력 중단 ${rules.outputIdleTimeoutSeconds! / 60}분 · 실행 ${rules.runTimeoutSeconds / 60}분(행동 사이 확인)`;
+    }
+    return `기존 방식 · 행동 ${rules.actionTimeoutSeconds / 60}분 · 실행 ${rules.runTimeoutSeconds / 60}분`;
+}
+
 function passTargetStatusText(status: PassTargetStatus): string {
     const labels: Record<PassTargetStatus, string> = {
-        pending: '대기', running: '실행 중', passed: '통과', 'not-passed': '미통과', cancelled: '취소됨',
+        pending: '대기', running: '실행 중', passed: '통과', 'not-passed': '미통과', ungraded: '평가 불가', cancelled: '취소됨',
     };
     return labels[status];
 }
@@ -232,10 +246,12 @@ function agenticRunMarkdown(run: AgenticEvaluationRun, index: number): string[] 
         markdownCodeBlock(run.goal),
     ];
     if (run.initialStateHash) lines.push('', `- 초기 상태 해시: ${run.initialStateHash}`);
-    if (run.result) {
-        lines.push('', '### 상태 평가', '', `- 결과: ${run.result.passed ? '통과' : '미달'} (${run.result.outcome})`, '', markdownCodeBlock(run.result.summary));
+    if (hasStateGrade(run) && run.result) {
+        lines.push('', '### 작업 평가', '', `- 결과: ${run.result.passed ? '통과' : '미통과'} (${run.result.outcome})`, '', markdownCodeBlock(run.result.summary));
         if ((run.result.requirements || []).length) lines.push('', '#### 확인 조건', '', ...(run.result.requirements || []).map((item) => `- ${item}`));
-        if ((run.result.violations || []).length) lines.push('', '#### 위반 사항', '', ...(run.result.violations || []).map((item) => `- ${item}`));
+        if ((run.result.violations || []).length) lines.push('', '#### 미통과 사유', '', ...(run.result.violations || []).map((item, index) => `- ${index + 1}. ${item}\n  - ${evidenceReportText(run, index)}`));
+    } else if (run.finishedAt) {
+        lines.push('', '### 작업 평가', '', '- 결과: 평가 불가', '', markdownCodeBlock(ungradedReason(run)));
     }
     if (run.error) lines.push('', '### 오류', '', markdownCodeBlock(run.error));
     lines.push('', '### 행동 기록');
@@ -253,8 +269,8 @@ function agenticRunMarkdown(run: AgenticEvaluationRun, index: number): string[] 
     if ((run.stateChanges || []).length === 0) {
         lines.push('', '기록된 상태 변경이 없습니다.');
     } else {
-        (run.stateChanges || []).forEach((change) => {
-            lines.push('', `#### ${change.resource}`, '', '이전 상태', '', markdownCodeBlock(change.before || ''), '', '변경 후 상태', '', markdownCodeBlock(change.after || ''));
+        (run.stateChanges || []).forEach((change, index) => {
+            lines.push('', `#### ${index + 1}. ${change.resource}`, '', '이전 상태', '', markdownCodeBlock(change.before || ''), '', '변경 후 상태', '', markdownCodeBlock(change.after || ''));
         });
     }
     return lines;
@@ -305,7 +321,7 @@ function agenticEvaluationMarkdownReport(evaluation: AgenticEvaluation): string 
         `- 도구 정의: ${evaluation.executionRules.toolDefinitionVersion}`,
         `- 채점기: ${evaluation.executionRules.graderVersion}`,
         `- 최대 행동: ${evaluation.executionRules.maxActions}`,
-        `- 실행 제한: ${evaluation.executionRules.runTimeoutSeconds}초`,
+        `- 시간 정책: ${executionTimeoutText(evaluation)}`,
         '',
         ...agenticPassTargetMarkdown(evaluation),
         '',
@@ -315,15 +331,24 @@ function agenticEvaluationMarkdownReport(evaluation: AgenticEvaluation): string 
     return `${lines.join('\n')}\n`;
 }
 
+function evidenceReportText(run: AgenticEvaluationRun, index: number): string {
+    const evidence = violationEvidence(run, index);
+    return [
+        evidence.steps.length ? `관련 행동: ${evidence.steps.join(', ')}번` : '',
+        evidence.changes.length ? `관련 상태 변경: ${evidence.changes.map((number) => number + 1).join(', ')}번` : '',
+        evidence.note,
+    ].filter(Boolean).join(' · ');
+}
+
 function agenticRunHTML(run: AgenticEvaluationRun, index: number): string {
-    const result = run.result
-        ? `<section><h3>상태 평가</h3><p><strong>${run.result.passed ? '통과' : '미달'}</strong> · ${escapeHTML(run.result.outcome)}</p><pre>${escapeHTML(run.result.summary)}</pre>${(run.result.requirements || []).length ? `<h4>확인 조건</h4><ul>${(run.result.requirements || []).map((item) => `<li>${escapeHTML(item)}</li>`).join('')}</ul>` : ''}${(run.result.violations || []).length ? `<h4>위반 사항</h4><ul class="violations">${(run.result.violations || []).map((item) => `<li>${escapeHTML(item)}</li>`).join('')}</ul>` : ''}</section>`
-        : '';
+    const result = hasStateGrade(run) && run.result
+        ? `<section><h3>작업 평가</h3><p><strong>${run.result.passed ? '통과' : '미통과'}</strong> · ${escapeHTML(run.result.outcome)}</p><pre>${escapeHTML(run.result.summary)}</pre>${(run.result.requirements || []).length ? `<h4>확인 조건</h4><ul>${(run.result.requirements || []).map((item) => `<li>${escapeHTML(item)}</li>`).join('')}</ul>` : ''}${(run.result.violations || []).length ? `<h4>미통과 사유</h4><ul class="violations">${(run.result.violations || []).map((item, issueIndex) => `<li>${issueIndex + 1}. ${escapeHTML(item)}<p>${escapeHTML(evidenceReportText(run, issueIndex))}</p></li>`).join('')}</ul>` : ''}</section>`
+        : run.finishedAt ? `<section><h3>작업 평가</h3><p><strong>평가 불가</strong></p><p>${escapeHTML(ungradedReason(run))}</p></section>` : '';
     const actions = (run.actions || []).length
         ? (run.actions || []).map((action) => `<article class="trace"><h4>${action.step}. ${escapeHTML(actionLabel(action))} · ${escapeHTML(action.status)}</h4><p>발생 시각: ${escapeHTML(formatReportTime(action.occurredAt))}</p>${action.arguments ? `<h5>입력값</h5><pre>${escapeHTML(action.arguments)}</pre>` : ''}${action.output ? `<h5>출력</h5><pre>${escapeHTML(action.output)}</pre>` : ''}${action.rawContent ? `<h5>원본 응답</h5><pre>${escapeHTML(action.rawContent)}</pre>` : ''}</article>`).join('')
         : '<p class="empty">기록된 행동이 없습니다.</p>';
     const changes = (run.stateChanges || []).length
-        ? (run.stateChanges || []).map((change) => `<article class="trace"><h4>${escapeHTML(change.resource)}</h4><h5>이전 상태</h5><pre>${escapeHTML(change.before || '(없음)')}</pre><h5>변경 후 상태</h5><pre>${escapeHTML(change.after || '(없음)')}</pre></article>`).join('')
+        ? (run.stateChanges || []).map((change, changeIndex) => `<article class="trace"><h4>${changeIndex + 1}. ${escapeHTML(change.resource)}</h4><h5>이전 상태</h5><pre>${escapeHTML(change.before || '(없음)')}</pre><h5>변경 후 상태</h5><pre>${escapeHTML(change.after || '(없음)')}</pre></article>`).join('')
         : '<p class="empty">기록된 상태 변경이 없습니다.</p>';
     return `<article class="run"><header><p class="label">실행 ${index + 1}</p><h2>${escapeHTML(run.title)}</h2></header><dl><div><dt>묶음</dt><dd>${escapeHTML(run.suite || '기존 시나리오')}</dd></div><div><dt>환경</dt><dd>${escapeHTML(run.environment)}</dd></div>${run.language ? `<div><dt>언어</dt><dd>${escapeHTML(run.language)}</dd></div>` : ''}<div><dt>분류</dt><dd>${escapeHTML(run.category)}</dd></div><div><dt>모델</dt><dd>${escapeHTML(run.model)}</dd></div><div><dt>시나리오</dt><dd>${escapeHTML(`${run.scenarioID}@${run.scenarioVersion} · 시도 ${run.attempt} · 환경 변형 ${run.variant}`)}</dd></div><div><dt>채점기</dt><dd>${escapeHTML(run.graderVersion)}</dd></div>${runMetricLines(run).map((line) => `<div><dt>실행 정보</dt><dd>${escapeHTML(line)}</dd></div>`).join('')}</dl><section><h3>목표</h3><pre>${escapeHTML(run.goal)}</pre></section>${run.initialStateHash ? `<p>초기 상태 해시: <code>${escapeHTML(run.initialStateHash)}</code></p>` : ''}${result}${run.error ? `<section><h3>오류</h3><pre>${escapeHTML(run.error)}</pre></section>` : ''}<section><h3>행동 기록</h3>${actions}</section><section><h3>상태 변경</h3>${changes}</section></article>`;
 }
@@ -343,7 +368,7 @@ function agenticEvaluationHTMLReport(evaluation: AgenticEvaluation): string {
     const rules = [
         ['행동 형식', evaluation.executionRules.actionFormatVersion], ['시스템 프롬프트', evaluation.executionRules.systemPromptVersion],
         ['도구 정의', evaluation.executionRules.toolDefinitionVersion], ['채점기', evaluation.executionRules.graderVersion],
-        ['최대 행동', String(evaluation.executionRules.maxActions)], ['실행 제한', `${evaluation.executionRules.runTimeoutSeconds}초`],
+        ['최대 행동', String(evaluation.executionRules.maxActions)], ['시간 정책', executionTimeoutText(evaluation)],
     ].map(([label, value]) => `<li><strong>${escapeHTML(label)}:</strong> ${escapeHTML(value)}</li>`).join('');
     return `<!doctype html>
 <html lang="ko">
@@ -400,15 +425,11 @@ function passTargets(evaluation: AgenticEvaluation): PassTarget[] {
     return Array.from(targets.values()).map((target) => {
         const runs = target.runs.sort((left, right) => left.attempt - right.attempt);
         const attempted = runs.filter((run) => Boolean(run.startedAt));
-        const passed = attempted.find((run) => run.result?.passed);
         target.attempts = attempted.length;
         target.activeDurationMs = attempted.reduce((total, run) => total + runDurationMs(run), 0);
         target.inputTokens = attempted.reduce((total, run) => total + (run.usage?.promptTokens || 0), 0);
         target.outputTokens = attempted.reduce((total, run) => total + (run.usage?.completionTokens || 0), 0);
-        if (passed) target.status = 'passed';
-        else if (evaluation.status === 'cancelled') target.status = 'cancelled';
-        else if (attempted.length >= evaluation.maxAttempts || evaluation.status === 'completed') target.status = 'not-passed';
-        else if (runs.some((run) => run.status === 'running')) target.status = 'running';
+        target.status = targetCompletionStatus(runs, evaluation.status, evaluation.maxAttempts);
         return target;
     }).sort((left, right) => left.runOrder - right.runOrder);
 }
@@ -437,7 +458,7 @@ function aggregateByEnvironment(targets: PassTarget[]): Array<{environment: stri
     for (const target of targets) {
         const current = aggregate.get(target.environment) || {environment: target.environment, total: 0, finished: 0, passed: 0};
         current.total += 1;
-        if (target.status === 'passed' || target.status === 'not-passed' || target.status === 'cancelled') current.finished += 1;
+        if (target.status === 'passed' || target.status === 'not-passed' || target.status === 'ungraded' || target.status === 'cancelled') current.finished += 1;
         if (target.status === 'passed') current.passed += 1;
         aggregate.set(target.environment, current);
     }
@@ -456,6 +477,7 @@ function groupTargetsBySuite(targets: PassTarget[]): Array<{suite: string; targe
 function passTargetAttemptText(target: PassTarget, maxAttempts: number): string {
     if (target.status === 'passed') return `${target.attempts}회 만에 통과`;
     if (target.status === 'not-passed') return `${target.attempts}회 시도했으나 미통과`;
+    if (target.status === 'ungraded') return `${target.attempts}회 시도했으나 평가 불가`;
     if (target.status === 'cancelled') return `${target.attempts}/${maxAttempts}회 시도 후 취소`;
     return `${target.attempts}/${maxAttempts}회 시도`;
 }
@@ -490,6 +512,7 @@ export default function AgenticEvaluationWorkspace({
     const [maxAttempts, setMaxAttempts] = useState(3);
     const [feedbackRetry, setFeedbackRetry] = useState(false);
     const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('');
+    const [timeoutPreset, setTimeoutPreset] = useState<AgenticTimeoutPreset>('standard');
     const [history, setHistory] = useState<AgenticEvaluationSummary[]>([]);
     const [loadingHistory, setLoadingHistory] = useState(true);
     const [evaluation, setEvaluation] = useState<AgenticEvaluation | null>(null);
@@ -751,6 +774,7 @@ export default function AgenticEvaluationWorkspace({
                 maxAttempts,
                 feedbackRetry,
                 reasoningEffort,
+                timeoutPreset,
             });
             setEvaluation(started);
             setView('result');
@@ -832,8 +856,19 @@ export default function AgenticEvaluationWorkspace({
         setSelectedModels((current) => current.filter((id) => nextIDs.includes(id)));
     }
 
+    function revealRunEvidence(id: string) {
+        const target = document.getElementById(id);
+        const details = target?.closest('details');
+        if (details) details.open = true;
+        target?.scrollIntoView({behavior: 'smooth', block: 'center'});
+        target?.focus({preventScroll: true});
+    }
+
     function renderRun(run: AgenticEvaluationRun) {
         const result = run.result;
+        const evidence = (result?.violations || []).map((_, index) => violationEvidence(run, index));
+        const actionReasons = (step: number) => evidence.flatMap((item, index) => item.steps.includes(step) ? [index + 1] : []);
+        const changeReasons = (changeIndex: number) => evidence.flatMap((item, index) => item.changes.includes(changeIndex) ? [index + 1] : []);
         return <article className="agentic-run-card" key={run.id}>
             <header className="agentic-run-heading">
                 <div>
@@ -846,12 +881,20 @@ export default function AgenticEvaluationWorkspace({
             </header>
             <p className="agentic-run-goal">{run.goal}</p>
             {run.retryFeedback && <p className="agentic-retry-feedback">이전 {run.retryFeedback.attempt}회차의 미통과 사유를 전달한 재시도입니다. 이전 실행의 변경 사항은 이어받지 않습니다.</p>}
-            {result && <section className={`agentic-result ${result.passed ? 'passed' : 'failed'}`}>
-                <strong>{result.passed ? '상태 평가 통과' : '상태 평가 미달'}</strong>
+            {hasStateGrade(run) && result && <section className={`agentic-result ${result.passed ? 'passed' : 'failed'}`}>
+                <strong>{result.passed ? '작업 평가 통과' : '작업 평가 미통과'}</strong>
                 <p>{result.summary}</p>
                 {(result.requirements || []).length > 0 && <ul><li>확인 조건: {(result.requirements || []).join(' · ')}</li></ul>}
-                {(result.violations || []).length > 0 && <ul className="agentic-violations">{(result.violations || []).map((violation) => <li key={violation}>{violation}</li>)}</ul>}
+                {(result.violations || []).length > 0 && <ol className="agentic-violations">{(result.violations || []).map((violation, index) => <li key={index}>
+                    <span>{violation}</span>
+                    <div className="agentic-evidence-links">
+                        {evidence[index].steps.map((step) => <button type="button" key={step} onClick={() => revealRunEvidence(`agentic-${run.id}-action-${step}`)}>관련 행동 {step} 보기</button>)}
+                        {evidence[index].changes.map((changeIndex) => <button type="button" key={changeIndex} onClick={() => revealRunEvidence(`agentic-${run.id}-change-${changeIndex}`)}>관련 상태 변경 {changeIndex + 1} 보기</button>)}
+                        {evidence[index].note && <small>{evidence[index].note}</small>}
+                    </div>
+                </li>)}</ol>}
             </section>}
+            {run.finishedAt && !hasStateGrade(run) && <section className="agentic-result ungraded"><strong>작업 평가 불가</strong><p>{ungradedReason(run)}</p></section>}
             {run.error && <p className="agentic-run-error">{run.error}</p>}
             <div className="agentic-run-metrics">
                 <span>행동 {(run.actions || []).length}회</span>
@@ -862,7 +905,8 @@ export default function AgenticEvaluationWorkspace({
             {(run.actions || []).length > 0 && <details className="agentic-details">
                 <summary>행동 기록 {(run.actions || []).length}개</summary>
                 <ol className="agentic-action-list">
-                    {(run.actions || []).map((action) => <li key={`${action.step}-${action.occurredAt}`} className={action.status}>
+                    {(run.actions || []).map((action) => <li key={`${action.step}-${action.occurredAt}`} id={`agentic-${run.id}-action-${action.step}`} tabIndex={-1} className={`${action.status} ${actionReasons(action.step).length ? 'agentic-evidence-related' : ''}`}>
+                        {actionReasons(action.step).length > 0 && <small className="agentic-evidence-badge">미통과 사유 {actionReasons(action.step).join(', ')} 관련</small>}
                         <div><strong>{action.step}. {actionLabel(action)}</strong><span>{action.status === 'success' ? '성공' : '오류'}</span></div>
                         {action.arguments && <code>{action.arguments}</code>}
                         {action.output && <pre>{action.output}</pre>}
@@ -873,8 +917,9 @@ export default function AgenticEvaluationWorkspace({
             {(run.stateChanges || []).length > 0 && <details className="agentic-details">
                 <summary>상태 변경 {(run.stateChanges || []).length}개</summary>
                 <div className="agentic-change-list">
-                    {(run.stateChanges || []).map((change) => <article key={`${change.resource}-${change.after}`}>
-                        <strong>{change.resource}</strong>
+                    {(run.stateChanges || []).map((change, changeIndex) => <article key={changeIndex} id={`agentic-${run.id}-change-${changeIndex}`} tabIndex={-1} className={changeReasons(changeIndex).length ? 'agentic-evidence-related' : ''}>
+                        {changeReasons(changeIndex).length > 0 && <small className="agentic-evidence-badge">미통과 사유 {changeReasons(changeIndex).join(', ')} 관련</small>}
+                        <strong>{changeIndex + 1}. {change.resource}</strong>
                         {change.before && <pre>{change.before}</pre>}
                         <span>→</span>
                         {change.after && <pre>{change.after}</pre>}
@@ -888,7 +933,7 @@ export default function AgenticEvaluationWorkspace({
         const runs = evaluation.runs || [];
         const targets = passTargets(evaluation);
         const targetGroups = groupTargetsBySuite(targets);
-        const completedTargets = targets.filter((target) => target.status === 'passed' || target.status === 'not-passed' || target.status === 'cancelled').length;
+        const completedTargets = targets.filter((target) => target.status === 'passed' || target.status === 'not-passed' || target.status === 'ungraded' || target.status === 'cancelled').length;
         const passedTargets = targets.filter((target) => target.status === 'passed').length;
         return <section className="agentic-page" aria-label="에이전트 실험 결과">
             <header className="agentic-header">
@@ -921,7 +966,7 @@ export default function AgenticEvaluationWorkspace({
                     <span>지시 {evaluation.executionRules.systemPromptVersion}</span>
                     <span>도구 {evaluation.executionRules.toolDefinitionVersion}</span>
                     <span>채점 {evaluation.executionRules.graderVersion}</span>
-                    <span>최대 {evaluation.executionRules.maxActions} 행동 · {Math.floor(evaluation.executionRules.runTimeoutSeconds / 60)}분</span>
+                    <span>최대 {evaluation.executionRules.maxActions} 행동 · {executionTimeoutText(evaluation)}</span>
                     <span>{feedbackRetryLabel(evaluation.feedbackRetry)}</span>
                 </div>
             </section>
@@ -951,7 +996,7 @@ export default function AgenticEvaluationWorkspace({
                 </div>
             </section>)}
             <section className="agentic-runs-section" id="agentic-run-results">
-                <div className="agentic-card-heading"><div><span className="eyebrow">RUN TRACE</span><h2>실행별 결과</h2></div><small>도구 호출, 복구 시도, 최종 상태 평가를 확인할 수 있습니다.</small></div>
+                <div className="agentic-card-heading"><div><span className="eyebrow">RUN TRACE</span><h2>실행별 결과</h2></div><small>도구 호출, 복구 시도, 최종 작업 평가를 확인할 수 있습니다.</small></div>
                 <div className="agentic-run-list">{runs.map(renderRun)}</div>
             </section>
         </section>;
@@ -1001,7 +1046,9 @@ export default function AgenticEvaluationWorkspace({
                 <div className="agentic-card-heading"><div><span className="eyebrow">3. RUN</span><h2>통과 조건</h2></div></div>
                 <label className="agentic-field"><span>최대 시도</span><select value={maxAttempts} onChange={(event) => setMaxAttempts(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((count) => <option value={count} key={count}>{count}회</option>)}</select></label>
                 <label className="agentic-field"><span>추론 강도</span><select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}>{reasoningEffortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                <label className="agentic-field"><span>시간 제한</span><select value={timeoutPreset} onChange={(event) => setTimeoutPreset(event.target.value as AgenticTimeoutPreset)}><option value="standard">표준 · 10분 / 1분 / 60분</option><option value="slow_local">느린 로컬 · 15분 / 5분 / 120분</option></select></label>
                 <label className="agentic-field agentic-feedback-retry"><span>피드백 재시도</span><span><input type="checkbox" checked={feedbackRetry} onChange={(event) => setFeedbackRetry(event.target.checked)} disabled={starting} />미통과 사유 전달</span></label>
+                <p className="agentic-run-count">순서: 첫 출력 대기 / 출력 중단 / 실행 전체. 출력 중인 요청은 행동 중간에 끊지 않고, 실행 전체 제한은 행동 사이에서 확인합니다.</p>
                 {reasoningWarning && <p className="agentic-warning">{reasoningWarning}</p>}
                 <p className="agentic-run-count">최대 <strong>{plannedRunCount}</strong>회까지 실행합니다. {feedbackRetry ? '피드백 재시도는 같은 초기 환경에서 채점 사유를 전달합니다.' : '모델·시나리오 조합이 통과하면 해당 조합은 즉시 종료합니다.'}</p>
                 <button className="primary-button" type="button" onClick={() => void startEvaluation()} disabled={starting || runCountOverLimit || !selectedProfile || selectedModels.length === 0 || selectedScenarioIDs.length === 0}>{starting ? '실험 준비 중…' : '에이전트 실험 시작'}</button>

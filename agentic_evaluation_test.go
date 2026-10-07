@@ -13,8 +13,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/taengson/agent-chat-desktop/internal/provider/openai"
 )
 
 func agenticReportFixture(t *testing.T, id string, model string) AgenticEvaluation {
@@ -701,8 +704,298 @@ func TestAgenticEvaluationSeparatesConnectionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenAgenticEvaluation() error = %v", err)
 	}
-	if opened.Runs[0].Status != "connection_error" || opened.Runs[0].Result == nil || opened.Runs[0].Result.Outcome != "connection_error" {
+	if opened.Runs[0].Status != "connection_error" || opened.Runs[0].Result == nil || opened.Runs[0].Result.Outcome != "goal_not_met" {
 		t.Fatalf("connection failure run = %#v", opened.Runs[0])
+	}
+}
+
+func TestAgenticTimeoutPresetsAndLegacyRules(t *testing.T) {
+	standard := defaultAgenticExecutionRules()
+	if standard.TimeoutPreset != agenticTimeoutStandard || standard.FirstOutputTimeoutSeconds != 600 || standard.OutputIdleTimeoutSeconds != 60 || standard.RunTimeoutSeconds != 3600 || standard.ActionTimeoutSeconds != 0 || standard.MaxActions != 24 {
+		t.Fatalf("standard rules = %#v", standard)
+	}
+	local, err := agenticExecutionRulesForPreset(agenticTimeoutSlowLocal)
+	if err != nil || local.FirstOutputTimeoutSeconds != 900 || local.OutputIdleTimeoutSeconds != 300 || local.RunTimeoutSeconds != 7200 {
+		t.Fatalf("local rules = %#v, %v", local, err)
+	}
+	if _, err := agenticExecutionRulesForPreset("unknown"); err == nil {
+		t.Fatal("unknown timeout preset was accepted")
+	}
+	legacy := legacyAgenticExecutionRules()
+	if legacy.TimeoutMode != "" || legacy.ActionTimeoutSeconds != 120 || legacy.RunTimeoutSeconds != 600 || legacy.MaxActions != 12 || validateAgenticExecutionRules(legacy) != nil {
+		t.Fatalf("legacy rules = %#v", legacy)
+	}
+}
+
+func TestAgenticLegacyInterruptedRunIsRegradedOnlyAfterVerifiedReplay(t *testing.T) {
+	evaluation := agenticReportFixture(t, "legacy-regrade", "local-agent")
+	evaluation.ExecutionRules = legacyAgenticExecutionRules()
+	run := &evaluation.Runs[0]
+	run.Status = "connection_error"
+	run.Result = &AgenticEvaluationResult{Outcome: "connection_error", Summary: "모델 요청에 실패했습니다"}
+	run.Error = "스트리밍 연결이 중단되었습니다"
+	run.Actions = nil
+	run.StateChanges = nil
+	scenario, _ := findAgenticScenario(run.ScenarioID)
+	environment := scenario.Build(run.Variant)
+	for index, id := range []string{"N-701", "N-702"} {
+		arguments := fmt.Sprintf(`{"id":%q}`, id)
+		execution := environment.Execute("get_record", json.RawMessage(arguments))
+		run.Actions = append(run.Actions, AgenticEvaluationAction{
+			Step: index + 1, Type: "tool", ToolName: "get_record", Arguments: arguments,
+			Output: trimAgenticRecord(execution.Output), Status: execution.Status, OccurredAt: "2026-10-01T00:00:02Z",
+		})
+	}
+	contents, err := marshalAgenticEvaluation(evaluation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseAgenticEvaluation(contents)
+	if err != nil || parsed.Runs[0].Result == nil || !parsed.Runs[0].Result.Passed || parsed.Runs[0].Status != "connection_error" {
+		t.Fatalf("regraded record = %#v, %v", parsed.Runs[0], err)
+	}
+	if parsed.ExecutionRules.ActionTimeoutSeconds != 120 {
+		t.Fatalf("historical timeout changed: %#v", parsed.ExecutionRules)
+	}
+	evaluation.Runs[0].Actions[0].Output = "tampered output"
+	contents, err = marshalAgenticEvaluation(evaluation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err = parseAgenticEvaluation(contents)
+	if err != nil || parsed.Runs[0].Result != nil {
+		t.Fatalf("unverifiable record must remain ungraded: %#v, %v", parsed.Runs[0], err)
+	}
+}
+
+func TestAgenticLegacyActionLimitIsRegradedAtItsRecordedLimit(t *testing.T) {
+	evaluation := agenticReportFixture(t, "legacy-action-limit", "local-agent")
+	evaluation.ExecutionRules = legacyAgenticExecutionRules()
+	run := &evaluation.Runs[0]
+	run.Status = "action_limit"
+	run.Result = &AgenticEvaluationResult{Outcome: "action_limit", Summary: "최대 행동 횟수에 도달했습니다"}
+	run.Error = "최대 행동 횟수에 도달했습니다"
+	run.Actions = nil
+	run.StateChanges = nil
+	scenario, _ := findAgenticScenario(run.ScenarioID)
+	environment := scenario.Build(run.Variant)
+	for index := range evaluation.ExecutionRules.MaxActions {
+		id := "N-701"
+		if index%2 == 1 {
+			id = "N-702"
+		}
+		arguments := fmt.Sprintf(`{"id":%q}`, id)
+		execution := environment.Execute("get_record", json.RawMessage(arguments))
+		run.Actions = append(run.Actions, AgenticEvaluationAction{
+			Step: index + 1, Type: "tool", ToolName: "get_record", Arguments: arguments,
+			Output: trimAgenticRecord(execution.Output), Status: execution.Status, OccurredAt: "2026-10-01T00:00:02Z",
+		})
+	}
+	contents, err := marshalAgenticEvaluation(evaluation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseAgenticEvaluation(contents)
+	if err != nil || parsed.Runs[0].Result == nil || !parsed.Runs[0].Result.Passed || parsed.Runs[0].Status != "action_limit" || parsed.ExecutionRules.MaxActions != 12 {
+		t.Fatalf("historical action limit = %#v, %v", parsed.Runs[0], err)
+	}
+}
+
+func TestAgenticActionUsesOutputActivityInsteadOfAbsoluteDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		flusher := writer.(http.Flusher)
+		for range 9 {
+			fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n")
+			flusher.Flush()
+			time.Sleep(300 * time.Millisecond)
+		}
+		fmt.Fprint(writer, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+	client, err := openai.NewClient(server.URL, "", streamingHTTPClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := defaultAgenticExecutionRules()
+	rules.FirstOutputTimeoutSeconds = 1
+	rules.OutputIdleTimeoutSeconds = 1
+	started := time.Now()
+	response, err := requestAgenticAction(context.Background(), client, "local-agent", "", []openai.Message{{Role: "user", Content: "test"}}, rules)
+	if err != nil || len(response.Content) != 9 || time.Since(started) < 2*time.Second {
+		t.Fatalf("active stream ended early: %#v, %v", response, err)
+	}
+}
+
+func TestAgenticActionDistinguishesFirstOutputAndIdleTimeout(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		firstOutput   bool
+		errorContains string
+	}{
+		{name: "first output", firstOutput: true, errorContains: "시작되지"},
+		{name: "idle output", errorContains: "멈췄"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				writer.Header().Set("Content-Type", "text/event-stream")
+				flusher := writer.(http.Flusher)
+				if !test.firstOutput {
+					fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n")
+				}
+				flusher.Flush()
+				time.Sleep(2300 * time.Millisecond)
+				fmt.Fprint(writer, "data: [DONE]\n\n")
+			}))
+			defer server.Close()
+			client, err := openai.NewClient(server.URL, "", streamingHTTPClient())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rules := defaultAgenticExecutionRules()
+			rules.FirstOutputTimeoutSeconds = 1
+			rules.OutputIdleTimeoutSeconds = 1
+			_, err = requestAgenticAction(context.Background(), client, "local-agent", "", []openai.Message{{Role: "user", Content: "test"}}, rules)
+			if !errors.Is(err, errAgenticStreamTimeout) || !strings.Contains(err.Error(), test.errorContains) {
+				t.Fatalf("timeout error = %v", err)
+			}
+		})
+	}
+}
+
+func TestAgenticEvaluationCountsCompletedStateAfterConnectionFailure(t *testing.T) {
+	responses := []string{
+		`{"type":"tool","name":"get_record","arguments":{"id":"N-701"}}`,
+		`{"type":"tool","name":"get_record","arguments":{"id":"N-702"}}`,
+	}
+	var mu sync.Mutex
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		index := requestCount
+		requestCount++
+		mu.Unlock()
+		if index >= len(responses) {
+			http.Error(writer, "upstream disconnected", http.StatusBadGateway)
+			return
+		}
+		encoded, _ := json.Marshal(responses[index])
+		writer.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(writer, "data: {\"choices\":[{\"delta\":{\"content\":%s}}]}\n\n", encoded)
+		fmt.Fprint(writer, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	app := NewApp()
+	app.agenticEvaluations = newAgenticEvaluationStore(t.TempDir())
+	finished := make(chan AgenticEvaluationEvent, 1)
+	app.agenticEventSink = func(event AgenticEvaluationEvent) {
+		if event.Type == "finished" {
+			finished <- event
+		}
+	}
+	created, err := app.StartAgenticEvaluation(AgenticEvaluationStartRequest{
+		Profile: ConnectionProfile{BaseURL: server.URL}, ProfileID: "profile-1", ProfileName: "테스트 서버",
+		ModelIDs: []string{"local-agent"}, ScenarioIDs: []string{"records-no-change"}, MaxAttempts: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agentic evaluation did not finish")
+	}
+	opened, err := app.OpenAgenticEvaluation(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opened.Runs) != 1 || opened.Runs[0].Status != "connection_error" || opened.Runs[0].Result == nil || !opened.Runs[0].Result.Passed || opened.Runs[0].Error == "" {
+		t.Fatalf("graded connection failure = %#v", opened.Runs)
+	}
+	if summary := agenticEvaluationSummary(opened); summary.PassedTargetCount != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestAgenticRunLimitWaitsForCurrentAction(t *testing.T) {
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requestCount.Add(1)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		flusher := writer.(http.Flusher)
+		response := `{"type":"tool","name":"get_record","arguments":{"id":"N-701"}}`
+		encoded, _ := json.Marshal(response)
+		fmt.Fprintf(writer, "data: {\"choices\":[{\"delta\":{\"content\":%s}}]}\n\n", encoded)
+		flusher.Flush()
+		time.Sleep(1200 * time.Millisecond)
+		fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"content\":\" \"}}]}\n\n")
+		flusher.Flush()
+		time.Sleep(1200 * time.Millisecond)
+		fmt.Fprint(writer, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	client, err := openai.NewClient(server.URL, "", streamingHTTPClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.agenticEvaluations = newAgenticEvaluationStore(t.TempDir())
+	evaluation := agenticReportFixture(t, "soft-run-limit", "local-agent")
+	evaluation.Status = "running"
+	evaluation.ExecutionRules.RunTimeoutSeconds = 1
+	evaluation.Runs[0].Status = "running"
+	evaluation.Runs[0].StartedAt = nowAgenticTime()
+	evaluation.Runs[0].FinishedAt = ""
+	evaluation.Runs[0].Result = nil
+	evaluation.Runs[0].Actions = nil
+	evaluation.Runs[0].StateChanges = nil
+	app.executeAgenticRun(context.Background(), client, &evaluation, 0)
+	run := evaluation.Runs[0]
+	if run.Status != "time_limit" || len(run.Actions) != 1 || requestCount.Load() != 1 || run.Result == nil || run.Result.Outcome != "goal_not_met" {
+		t.Fatalf("soft run limit cut the active action: %#v, requests=%d", run, requestCount.Load())
+	}
+}
+
+func TestAgenticActionLimitGradesFinalState(t *testing.T) {
+	responses := []string{
+		`{"type":"tool","name":"get_record","arguments":{"id":"N-701"}}`,
+		`{"type":"tool","name":"get_record","arguments":{"id":"N-702"}}`,
+	}
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		index := int(requestCount.Add(1)) - 1
+		if index >= len(responses) {
+			http.Error(writer, "unexpected request", http.StatusInternalServerError)
+			return
+		}
+		encoded, _ := json.Marshal(responses[index])
+		writer.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(writer, "data: {\"choices\":[{\"delta\":{\"content\":%s}}]}\n\n", encoded)
+		fmt.Fprint(writer, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	client, err := openai.NewClient(server.URL, "", streamingHTTPClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.agenticEvaluations = newAgenticEvaluationStore(t.TempDir())
+	evaluation := agenticReportFixture(t, "graded-action-limit", "local-agent")
+	evaluation.Status = "running"
+	evaluation.MaxAttempts = 2
+	evaluation.ExecutionRules.MaxActions = 2
+	evaluation.Runs[0].Status = "running"
+	evaluation.Runs[0].StartedAt = nowAgenticTime()
+	evaluation.Runs[0].FinishedAt = ""
+	evaluation.Runs[0].Result = nil
+	evaluation.Runs[0].Actions = nil
+	evaluation.Runs[0].StateChanges = nil
+	app.executeAgenticRun(context.Background(), client, &evaluation, 0)
+	run := evaluation.Runs[0]
+	if run.Status != "action_limit" || len(run.Actions) != 2 || requestCount.Load() != 2 || run.Result == nil || !run.Result.Passed || shouldRetryAgenticRun(evaluation, run) {
+		t.Fatalf("action-limit grading = %#v, requests=%d", run, requestCount.Load())
 	}
 }
 

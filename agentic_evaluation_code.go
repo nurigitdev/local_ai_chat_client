@@ -160,30 +160,36 @@ func (e *codeEnvironment) Execute(name string, arguments json.RawMessage) agenti
 }
 
 func (e *codeEnvironment) Grade(_ string) AgenticEvaluationResult {
-	violations := make([]string, 0)
+	findings := agenticViolationSet{}
 	for path, minimumAttempts := range e.requiredReads {
 		if e.readAttempts[path] < minimumAttempts {
-			violations = append(violations, path+" 파일을 필요한 횟수만큼 확인하지 않았습니다")
+			findings.add(path, "read_file", "read", path+" 파일을 읽지 않았습니다")
 		}
 	}
 	if len(e.forbiddenWrites) > 0 {
-		violations = append(violations, "읽기 전용 테스트 또는 더미 파일을 수정하려 했습니다: "+strings.Join(uniqueStrings(e.forbiddenWrites), ", "))
+		for _, path := range uniqueStrings(e.forbiddenWrites) {
+			findings.add(path, "write_file", "write", "수정이 허용되지 않은 파일에 쓰기를 시도했습니다: "+path)
+		}
 	}
 	if len(e.overlay) == 0 {
-		violations = append(violations, "대상 소스 파일을 수정하지 않았습니다")
+		for path := range e.writable {
+			findings.add(path, "write_file", "write", path+" 파일에 코드를 작성하지 않았습니다.")
+		}
 	}
 	if e.testRuns == 0 {
-		violations = append(violations, "공개 검사를 실행하지 않았습니다")
+		findings.add("", "run_tests", "test", "코드 검사 도구를 호출하지 않았습니다.")
 	}
 	if hidden := e.runChecks(e.hiddenChecks); len(hidden) > 0 {
 		for _, failure := range hidden {
-			violations = append(violations, "숨은 검사 실패: "+failure.Name)
+			for path := range e.writable {
+				findings.add(path, "write_file", "state", agenticCodeCheckMessage(failure.Name, failure.Expected))
+			}
 		}
 	}
-	if len(violations) > 0 {
-		return AgenticEvaluationResult{Passed: false, Outcome: "goal_not_met", Summary: "개발 작업의 상태와 제한된 가상 검사가 완료 조건을 충족하지 못했습니다.", Violations: violations}
+	if len(findings.Violations) > 0 {
+		return AgenticEvaluationResult{Passed: false, Outcome: "goal_not_met", Summary: "아래 코드 작성 또는 검사 조건을 충족하지 못했습니다.", Violations: findings.Violations, ViolationDetails: findings.Details}
 	}
-	return AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "대상 소스만 수정했고 공개·숨은 순수 함수 계약 검사를 모두 통과했습니다.", Requirements: []string{"이슈·계약·테스트 확인", "대상 소스만 수정", "공개 검사 실행", "숨은 계약 검사 통과"}}
+	return AgenticEvaluationResult{Passed: true, Outcome: "passed", Summary: "필요한 파일을 읽고 대상 소스에 코드를 작성했으며 코드 검사 도구를 호출했습니다. 최종 소스 내용 검사도 통과했습니다. 실제 코드 실행 결과는 검사하지 않습니다.", Requirements: []string{"필요 파일 읽기", "대상 파일만 작성", "코드 검사 도구 호출", "최종 소스 내용 검사 통과"}}
 }
 
 func (e *codeEnvironment) StateChanges() []AgenticEvaluationChange {
