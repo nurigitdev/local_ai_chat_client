@@ -83,16 +83,16 @@ func agenticSubject(label string) string {
 
 func agenticCodeCheckMessage(name, expected string) string {
 	descriptions := map[string]string{
-		"입력 검증":  "입력 검증을 확인하지 못했습니다. 허용 범위를 벗어난 입력에 오류를 발생시켜야 합니다.",
-		"값 문자열화": "숫자와 문자열 값을 문자열로 변환하는 처리를 확인하지 못했습니다.",
-		"상한 제한":  "요청 값이 최댓값을 넘으면 최댓값으로 제한하는 처리를 확인하지 못했습니다.",
-		"안전한 비교": "빈 입력(null)이나 같은 상태로의 변경을 거부하고 상태 이름을 안전하게 비교하는 처리를 확인하지 못했습니다.",
+		"입력 검증":  "잘못된 입력에 오류 발생시키기",
+		"값 문자열화": "숫자와 문자열 값을 문자열로 바꾸기",
+		"상한 제한":  "요청 값이 최댓값을 넘지 않도록 제한하기",
+		"안전한 비교": "빈 입력이나 같은 상태로의 변경을 거부하고 상태 이름 비교하기",
 	}
-	message, ok := descriptions[name]
+	description, ok := descriptions[name]
 	if !ok {
-		message = "코드에서 다음 처리를 확인하지 못했습니다: " + expected + "."
+		description = expected
 	}
-	return message + " 이 검사는 코드를 실행하지 않고 소스 내용을 확인합니다."
+	return "작성한 코드가 ‘" + description + "’ 검사에서 통과하지 못했습니다. 코드를 실행하지 않고 정해진 표현이 있는지 비교하는 검사이므로, 같은 기능을 다른 방식으로 작성하면 미통과할 수 있습니다."
 }
 
 func agenticFieldLabel(field string) string {
