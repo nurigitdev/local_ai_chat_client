@@ -5,6 +5,16 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import remarkGfm from 'remark-gfm';
 import {App as ChatService} from '../bindings/github.com/taengson/agent-chat-desktop';
 import OpenRouterModelPicker, {isOpenRouterURL} from './OpenRouterModelPicker';
+import {
+    mapComparisonSelectionToSuite,
+    normalizeComparisonSelection,
+    practicalBenchmarkPairCandidates,
+    practicalBenchmarkSuite,
+    type PracticalComparisonLabel,
+    type PracticalComparisonSelection,
+    type PracticalBenchmarkPairCandidate,
+    type PracticalBenchmarkSuite,
+} from './benchmarkComparison';
 import type {
     ChatEvent,
     ConnectionProfile,
@@ -44,9 +54,6 @@ type BenchmarkMetric = 'totalDuration' | 'firstToken' | 'generationSpeed' | 'out
 type BenchmarkChartScale = 'relative' | 'absolute';
 type BenchmarkExportKind = 'analysis' | 'comparison' | 'practical';
 type BenchmarkExportFormat = 'html' | 'markdown';
-type PracticalBenchmarkSuite = 'document' | 'development';
-type PracticalComparisonLabel = 'A' | 'B' | 'C';
-
 type PracticalBenchmarkPair = {
     document: ModelBenchmark;
     development: ModelBenchmark;
@@ -54,11 +61,10 @@ type PracticalBenchmarkPair = {
 
 type PracticalBenchmarkPairs = Record<PracticalComparisonLabel, PracticalBenchmarkPair | null>;
 
-type PracticalBenchmarkPairCandidate = {
-    id: string;
-    document: ModelBenchmarkSummary;
-    development: ModelBenchmarkSummary;
-};
+type BenchmarkComparisonSelections = Record<
+    PracticalBenchmarkSuite,
+    PracticalComparisonSelection
+>;
 
 const benchmarkReportFormatVersion = 1;
 const benchmarkReportMarkerName = 'agent-chat-benchmark-report-v1';
@@ -67,6 +73,10 @@ const practicalBenchmarkSuiteLabels: Record<PracticalBenchmarkSuite, string> = {
     development: '개발·지시 이행',
 };
 const emptyPracticalBenchmarkPairs: PracticalBenchmarkPairs = {A: null, B: null, C: null};
+const emptyBenchmarkComparisonSelections: BenchmarkComparisonSelections = {
+    document: {A: '', B: '', C: ''},
+    development: {A: '', B: '', C: ''},
+};
 
 const developmentBenchmarkTemplates: BenchmarkCaseDraft[] = [
     {
@@ -498,27 +508,11 @@ function hasSameTestConfiguration(left: ModelBenchmark, right: ModelBenchmark): 
     });
 }
 
-function practicalBenchmarkSuite(suiteName: string): PracticalBenchmarkSuite | null {
-    const normalized = suiteName.replace(/[\s·/]+/g, '');
-    if (normalized.includes('문서한국어실무')) return 'document';
-    if (normalized.includes('개발지시이행')) return 'development';
-    return null;
-}
-
 function isPracticalBenchmarkPairComplete(pair: PracticalBenchmarkPair): boolean {
     return practicalBenchmarkSuite(pair.document.suiteName) === 'document'
         && practicalBenchmarkSuite(pair.development.suiteName) === 'development'
         && (pair.document.cases || []).length === 4
         && (pair.development.cases || []).length === 4;
-}
-
-function hasSameBenchmarkCondition(
-    left: Pick<ModelBenchmarkSummary, 'model' | 'profileBaseURL' | 'reasoningEffort'>,
-    right: Pick<ModelBenchmarkSummary, 'model' | 'profileBaseURL' | 'reasoningEffort'>,
-): boolean {
-    return left.model === right.model
-        && left.profileBaseURL === right.profileBaseURL
-        && left.reasoningEffort === right.reasoningEffort;
 }
 
 function hasSamePracticalTestConfiguration(left: PracticalBenchmarkPair, right: PracticalBenchmarkPair): boolean {
@@ -953,9 +947,7 @@ function ModelBenchmarkWorkspace({
     const [analysisMetric, setAnalysisMetric] = useState<BenchmarkMetric>('totalDuration');
     const [analysisScale, setAnalysisScale] = useState<BenchmarkChartScale>('absolute');
     const [comparisonSuite, setComparisonSuite] = useState<PracticalBenchmarkSuite>('document');
-    const [comparisonAID, setComparisonAID] = useState('');
-    const [comparisonBID, setComparisonBID] = useState('');
-    const [comparisonCID, setComparisonCID] = useState('');
+    const [comparisonSelections, setComparisonSelections] = useState<BenchmarkComparisonSelections>(emptyBenchmarkComparisonSelections);
     const [comparisonA, setComparisonA] = useState<ModelBenchmark | null>(null);
     const [comparisonB, setComparisonB] = useState<ModelBenchmark | null>(null);
     const [comparisonC, setComparisonC] = useState<ModelBenchmark | null>(null);
@@ -984,6 +976,7 @@ function ModelBenchmarkWorkspace({
     const runProfileRef = useRef<ConnectionProfile | null>(null);
     const modelLoadPromiseRef = useRef<ReturnType<typeof ChatService.ListModels> | null>(null);
     const modelLoadSequenceRef = useRef(0);
+    const previousComparisonSuiteRef = useRef<PracticalBenchmarkSuite>(comparisonSuite);
 
     const benchmarkProfiles = useMemo(
         () => profiles.some((profile) => profile.id === openRouterProfileID)
@@ -1010,34 +1003,36 @@ function ModelBenchmarkWorkspace({
         () => history.filter((item) => item.status === 'completed' && item.caseCount > 0),
         [history],
     );
-    const practicalDocumentHistory = useMemo(
-        () => completedHistory.filter((item) => practicalBenchmarkSuite(item.suiteName) === 'document'),
+    const comparisonHistoryBySuite = useMemo(
+        () => ({
+            document: completedHistory.filter((item) => practicalBenchmarkSuite(item.suiteName) === 'document'),
+            development: completedHistory.filter((item) => practicalBenchmarkSuite(item.suiteName) === 'development'),
+        }),
         [completedHistory],
     );
-    const practicalDevelopmentHistory = useMemo(
-        () => completedHistory.filter((item) => practicalBenchmarkSuite(item.suiteName) === 'development'),
+    const comparisonHistory = comparisonHistoryBySuite[comparisonSuite];
+    const practicalPairCandidates = useMemo(
+        () => practicalBenchmarkPairCandidates(completedHistory),
         [completedHistory],
     );
-    const comparisonHistory = useMemo(
-        () => completedHistory.filter((item) => practicalBenchmarkSuite(item.suiteName) === comparisonSuite),
-        [comparisonSuite, completedHistory],
-    );
-    const practicalPairCandidates = useMemo(() => practicalDocumentHistory.flatMap((document) => (
-        practicalDevelopmentHistory
-            .filter((development) => hasSameBenchmarkCondition(document, development))
-            .map((development) => ({
-                id: `${document.id}:${development.id}`,
-                document,
-                development,
-            }))
-    )).sort((left, right) => (
-        Math.max(Date.parse(right.document.updatedAt), Date.parse(right.development.updatedAt))
-        - Math.max(Date.parse(left.document.updatedAt), Date.parse(left.development.updatedAt))
-    )), [practicalDocumentHistory, practicalDevelopmentHistory]);
+    const comparisonSelection = comparisonSelections[comparisonSuite];
+    const comparisonAID = comparisonSelection.A;
+    const comparisonBID = comparisonSelection.B;
+    const comparisonCID = comparisonSelection.C;
 
     function replaceBenchmark(nextBenchmark: ModelBenchmark | null) {
         benchmarkRef.current = nextBenchmark;
         setBenchmark(nextBenchmark);
+    }
+
+    function selectComparisonRecord(label: PracticalComparisonLabel, id: string) {
+        setComparisonSelections((current) => ({
+            ...current,
+            [comparisonSuite]: {
+                ...current[comparisonSuite],
+                [label]: id,
+            },
+        }));
     }
 
     function upsertHistory(nextBenchmark: ModelBenchmark) {
@@ -1083,18 +1078,40 @@ function ModelBenchmarkWorkspace({
     }, [analysisID, completedHistory]);
 
     useEffect(() => {
+        if (loadingHistory) return;
+        const previousSuite = previousComparisonSuiteRef.current;
+        if (previousSuite === comparisonSuite) return;
+        previousComparisonSuiteRef.current = comparisonSuite;
+        setComparisonSelections((current) => {
+            const nextSelection = mapComparisonSelectionToSuite(
+                comparisonHistoryBySuite[previousSuite],
+                current[previousSuite],
+                comparisonHistoryBySuite[comparisonSuite],
+                current[comparisonSuite],
+            );
+            return {
+                ...current,
+                [comparisonSuite]: nextSelection,
+            };
+        });
+    }, [comparisonHistoryBySuite, comparisonSuite, loadingHistory]);
+
+    useEffect(() => {
         const availableIDs = comparisonHistory.map((item) => item.id);
-        const nextAID = availableIDs.includes(comparisonAID) ? comparisonAID : availableIDs[0] || '';
-        const nextBID = availableIDs.includes(comparisonBID) && comparisonBID !== nextAID
-            ? comparisonBID
-            : availableIDs.find((id) => id !== nextAID) || '';
-        const nextCID = availableIDs.includes(comparisonCID) && comparisonCID !== nextAID && comparisonCID !== nextBID
-            ? comparisonCID
-            : '';
-        if (nextAID !== comparisonAID) setComparisonAID(nextAID);
-        if (nextBID !== comparisonBID) setComparisonBID(nextBID);
-        if (nextCID !== comparisonCID) setComparisonCID(nextCID);
-    }, [comparisonAID, comparisonBID, comparisonCID, comparisonHistory]);
+        setComparisonSelections((current) => {
+            const selection = current[comparisonSuite];
+            const nextSelection = normalizeComparisonSelection(availableIDs, selection);
+            if (
+                nextSelection.A === selection.A
+                && nextSelection.B === selection.B
+                && nextSelection.C === selection.C
+            ) return current;
+            return {
+                ...current,
+                [comparisonSuite]: nextSelection,
+            };
+        });
+    }, [comparisonHistory, comparisonSuite]);
 
     useEffect(() => {
         const candidateIDs = practicalPairCandidates.map((candidate) => candidate.id);
@@ -1991,7 +2008,7 @@ function ModelBenchmarkWorkspace({
                         </div>
                         <label>
                             A 기록
-                            <select value={comparisonAID} onChange={(event) => setComparisonAID(event.target.value)} disabled={loadingHistory || comparisonHistory.length < 2}>
+                            <select value={comparisonAID} onChange={(event) => selectComparisonRecord('A', event.target.value)} disabled={loadingHistory || comparisonHistory.length < 2}>
                                 {comparisonHistory.length < 2 && <option value="">비교할 기록이 부족합니다</option>}
                                 {comparisonHistory.map((item) => (
                                     <option key={item.id} value={item.id} disabled={item.id === comparisonBID || item.id === comparisonCID}>{benchmarkComparisonRecordLabel(item)}</option>
@@ -2000,7 +2017,7 @@ function ModelBenchmarkWorkspace({
                         </label>
                         <label>
                             B 기록
-                            <select value={comparisonBID} onChange={(event) => setComparisonBID(event.target.value)} disabled={loadingHistory || comparisonHistory.length < 2}>
+                            <select value={comparisonBID} onChange={(event) => selectComparisonRecord('B', event.target.value)} disabled={loadingHistory || comparisonHistory.length < 2}>
                                 {comparisonHistory.length < 2 && <option value="">비교할 기록이 부족합니다</option>}
                                 {comparisonHistory.map((item) => (
                                     <option key={item.id} value={item.id} disabled={item.id === comparisonAID || item.id === comparisonCID}>{benchmarkComparisonRecordLabel(item)}</option>
@@ -2009,7 +2026,7 @@ function ModelBenchmarkWorkspace({
                         </label>
                         <label>
                             C 기록
-                            <select value={comparisonCID} onChange={(event) => setComparisonCID(event.target.value)} disabled={loadingHistory || comparisonHistory.length < 3}>
+                            <select value={comparisonCID} onChange={(event) => selectComparisonRecord('C', event.target.value)} disabled={loadingHistory || comparisonHistory.length < 3}>
                                 <option value="">선택 안 함</option>
                                 {comparisonHistory.map((item) => (
                                     <option key={item.id} value={item.id} disabled={item.id === comparisonAID || item.id === comparisonBID}>{benchmarkComparisonRecordLabel(item)}</option>
