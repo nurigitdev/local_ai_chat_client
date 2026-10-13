@@ -157,6 +157,14 @@ export function SaveConversation(conversation: $models.Conversation): $Cancellab
     return $Call.ByID(3192203735, conversation);
 }
 
+/**
+ * SaveDecisionDatasetExport saves a GUI-authored suite or case list at the
+ * path selected by the desktop save dialog. It does not execute a benchmark.
+ */
+export function SaveDecisionDatasetExport(path: string, contents: string): $CancellablePromise<void> {
+    return $Call.ByID(1806256612, path, contents);
+}
+
 export function SaveModelBenchmark(benchmark: $models.ModelBenchmark): $CancellablePromise<$models.ModelBenchmark> {
     return $Call.ByID(3578344020, benchmark);
 }

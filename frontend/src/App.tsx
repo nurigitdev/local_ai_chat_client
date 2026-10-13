@@ -19,6 +19,7 @@ import type {
     TokenUsage,
 } from '../bindings/github.com/taengson/agent-chat-desktop/models';
 import ModelBenchmarkWorkspace, {type ModelBenchmarkSidebarState} from './ModelBenchmark';
+import DecisionBenchmarkWorkspace, {type DecisionSidebarState, type DecisionView} from './DecisionBenchmark';
 import BenchmarkSyncWorkspace, {
     benchmarkSyncSidebarState,
     emptyBenchmarkSyncSidebar,
@@ -628,6 +629,9 @@ function AssistantMessageContent({content}: {content: string}) {
 
 function App() {
     const [workspace, setWorkspace] = useState<'chat' | 'benchmark' | 'agentic' | 'sync'>('chat');
+    const [benchmarkKind, setBenchmarkKind] = useState<'generative' | 'decision'>('generative');
+    const [decisionView, setDecisionView] = useState<DecisionView>('setup');
+    const [decisionSidebar, setDecisionSidebar] = useState<DecisionSidebarState>({targetCount: 0, caseCount: 0, language: '한국어'});
     const [sidebarVisible, setSidebarVisible] = useState(true);
     const [benchmarkBusy, setBenchmarkBusy] = useState(false);
     const [agenticBusy, setAgenticBusy] = useState(false);
@@ -794,6 +798,10 @@ function App() {
 
     const handleBenchmarkSidebarChange = useCallback((nextState: ModelBenchmarkSidebarState) => {
         setBenchmarkSidebar(nextState);
+    }, []);
+
+    const handleDecisionSidebarChange = useCallback((nextState: DecisionSidebarState) => {
+        setDecisionSidebar(nextState);
     }, []);
 
     const handleSyncSidebarChange = useCallback((nextState: BenchmarkSyncSidebarState) => {
@@ -1959,6 +1967,28 @@ function App() {
                     </div>
                 </section>
                     </>
+                ) : workspace === 'benchmark' && benchmarkKind === 'decision' ? (
+                    <section className="benchmark-sidebar" aria-label="Decision Benchmark 안내">
+                        <div className="section-heading"><span>Decision Benchmark</span></div>
+                        <nav className="decision-sidebar-nav" aria-label="Decision 평가 화면">
+                            {([['setup', '실험 설정'], ['dataset', '테스트셋'], ['results', '결과 비교']] as const).map(([view, label]) => <button
+                                key={view}
+                                type="button"
+                                className={decisionView === view ? 'active' : ''}
+                                aria-current={decisionView === view ? 'page' : undefined}
+                                onClick={() => setDecisionView(view)}
+                            >{label}</button>)}
+                        </nav>
+                        <div className="decision-sidebar-config">
+                            <span>현재 실험 구성</span>
+                            <strong>{decisionSidebar.targetCount}개 모델 · {decisionSidebar.caseCount}개 문항</strong>
+                            <small>{decisionSidebar.language}</small>
+                        </div>
+                        <div className="decision-sidebar-records">
+                            <strong>실행 기록</strong>
+                            <p>실행 기능이 연결되면<br/>저장된 평가 기록이 표시됩니다.</p>
+                        </div>
+                    </section>
                 ) : workspace === 'benchmark' ? (
                     <section className="benchmark-sidebar">
                         <div className="section-heading"><span>모델 실험실</span></div>
@@ -2190,6 +2220,11 @@ function App() {
 
             {workspace === 'benchmark' ? (
                 <main className="benchmark-panel">
+                    <nav className="benchmark-kind-switch" aria-label="평가 종류">
+                        <button type="button" className={benchmarkKind === 'generative' ? 'active' : ''} aria-pressed={benchmarkKind === 'generative'} onClick={() => setBenchmarkKind('generative')} disabled={benchmarkBusy}>생성형 평가</button>
+                        <button type="button" className={benchmarkKind === 'decision' ? 'active' : ''} aria-pressed={benchmarkKind === 'decision'} onClick={() => setBenchmarkKind('decision')} disabled={benchmarkBusy}>Decision Benchmark</button>
+                    </nav>
+                    <div hidden={benchmarkKind !== 'generative'}>
                     <ModelBenchmarkWorkspace
                         profiles={savedConnectionProfiles}
                         connectionAPIKey={apiKey}
@@ -2202,6 +2237,14 @@ function App() {
                         historyRefreshKey={benchmarkHistoryRefreshKey}
                         onRequestBenchmarkDelete={requestBenchmarkDelete}
                     />
+                    </div>
+                    <div hidden={benchmarkKind !== 'decision'}>
+                        <DecisionBenchmarkWorkspace
+                            view={decisionView}
+                            onViewChange={setDecisionView}
+                            onSidebarChange={handleDecisionSidebarChange}
+                        />
+                    </div>
                 </main>
             ) : workspace === 'agentic' ? (
                 <main className="benchmark-panel">
