@@ -221,7 +221,12 @@ type ResponseMetrics struct {
 }
 
 type App struct {
-	ctx context.Context
+	decisions         *decisionBenchmarkStore
+	decisionActiveID  string
+	decisionEventSink func(DecisionBenchmarkEvent)
+	decisionWG        sync.WaitGroup
+	decisionStopping  bool
+	ctx               context.Context
 
 	mu                 sync.Mutex
 	cancels            map[string]context.CancelFunc
@@ -239,6 +244,7 @@ func NewApp() *App {
 	benchmarks := newModelBenchmarkStore("")
 	agenticEvaluations := newAgenticEvaluationStore("")
 	return &App{
+		decisions:          &decisionBenchmarkStore{},
 		cancels:            make(map[string]context.CancelFunc),
 		conversations:      newConversationStore(""),
 		profiles:           newConnectionProfileStore(""),
@@ -250,6 +256,9 @@ func NewApp() *App {
 
 func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
 	a.ctx = ctx
+	if err := a.decisions.markInterrupted(); err != nil {
+		return err
+	}
 	if err := a.agenticEvaluations.MarkInterrupted(); err != nil {
 		return err
 	}
@@ -258,11 +267,13 @@ func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) 
 
 func (a *App) ServiceShutdown() error {
 	a.mu.Lock()
+	a.decisionStopping = true
 	for id, cancel := range a.cancels {
 		cancel()
 		delete(a.cancels, id)
 	}
 	a.mu.Unlock()
+	a.decisionWG.Wait()
 	return a.sync.Close()
 }
 

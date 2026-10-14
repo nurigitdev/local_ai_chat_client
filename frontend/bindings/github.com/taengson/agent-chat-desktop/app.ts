@@ -21,12 +21,24 @@ export function CancelChat(requestID: string): $CancellablePromise<boolean> {
     return $Call.ByID(2522773405, requestID);
 }
 
+export function CancelDecisionBenchmark(id: string): $CancellablePromise<boolean> {
+    return $Call.ByID(2194485168, id);
+}
+
 export function CheckBenchmarkSyncPairing(requestID: string): $CancellablePromise<$models.BenchmarkSyncState> {
     return $Call.ByID(3387929511, requestID);
 }
 
+export function CheckDecisionConnection(target: $models.DecisionTarget, token: string, timeoutSeconds: number): $CancellablePromise<$models.DecisionCaseResult> {
+    return $Call.ByID(1239750041, target, token, timeoutSeconds);
+}
+
 export function ClearBenchmarkSyncLogs(): $CancellablePromise<$models.BenchmarkSyncState> {
     return $Call.ByID(458136437);
+}
+
+export function CompareDecisionBenchmarks(ids: string[] | null): $CancellablePromise<$models.DecisionComparison> {
+    return $Call.ByID(511970734, ids);
 }
 
 export function CreateBenchmarkSyncPairingCode(): $CancellablePromise<$models.BenchmarkSyncState> {
@@ -53,6 +65,10 @@ export function DeleteConversation(id: string): $CancellablePromise<void> {
     return $Call.ByID(1702807921, id);
 }
 
+export function DeleteDecisionBenchmark(id: string): $CancellablePromise<void> {
+    return $Call.ByID(3384512871, id);
+}
+
 export function DeleteModelBenchmark(id: string): $CancellablePromise<void> {
     return $Call.ByID(2912364830, id);
 }
@@ -61,8 +77,34 @@ export function DeleteSavedConnectionProfile(id: string): $CancellablePromise<vo
     return $Call.ByID(4225912054, id);
 }
 
+export function ExportDecisionBenchmark(id: string, format: string): $CancellablePromise<string> {
+    return $Call.ByID(3290496088, id, format);
+}
+
+/**
+ * Comparison reports embed each full original record, enabling complete restoration.
+ */
+export function ExportDecisionComparison(ids: string[] | null, format: string): $CancellablePromise<string> {
+    return $Call.ByID(1158585632, ids, format);
+}
+
+export function GetActiveDecisionBenchmark(): $CancellablePromise<string> {
+    return $Call.ByID(3804218158);
+}
+
 export function GetBenchmarkSyncState(): $CancellablePromise<$models.BenchmarkSyncState> {
     return $Call.ByID(2636766830);
+}
+
+/**
+ * Model discovery is separate from inference: it never loads a model or sends dataset text.
+ */
+export function GetDecisionModelCatalog(target: $models.DecisionTarget, token: string): $CancellablePromise<$models.DecisionModelCatalog> {
+    return $Call.ByID(32606857, target, token);
+}
+
+export function GetDefaultDecisionSuite(): $CancellablePromise<$models.DecisionSuite> {
+    return $Call.ByID(4242097978);
 }
 
 /**
@@ -80,6 +122,17 @@ export function ImportBenchmarkReport(path: string): $CancellablePromise<$models
     return $Call.ByID(1730891493, path);
 }
 
+/**
+ * Imported reports are validated and stored as new local snapshots; duplicates keep their existing ID.
+ */
+export function ImportDecisionReport(contents: string): $CancellablePromise<$models.DecisionBenchmark> {
+    return $Call.ByID(374678472, contents);
+}
+
+export function ImportDecisionReports(contents: string): $CancellablePromise<$models.DecisionBenchmark[] | null> {
+    return $Call.ByID(3808903009, contents);
+}
+
 export function ListAgenticEvaluationScenarios(): $CancellablePromise<$models.AgenticEvaluationScenarioSummary[] | null> {
     return $Call.ByID(396275063);
 }
@@ -90,6 +143,10 @@ export function ListAgenticEvaluations(): $CancellablePromise<$models.AgenticEva
 
 export function ListConversations(): $CancellablePromise<$models.ConversationSummary[] | null> {
     return $Call.ByID(1664713955);
+}
+
+export function ListDecisionBenchmarks(): $CancellablePromise<$models.DecisionBenchmark[] | null> {
+    return $Call.ByID(2947425535);
 }
 
 export function ListModelBenchmarks(): $CancellablePromise<$models.ModelBenchmarkSummary[] | null> {
@@ -114,6 +171,10 @@ export function OpenAgenticEvaluation(id: string): $CancellablePromise<$models.A
 
 export function OpenConversation(id: string): $CancellablePromise<$models.Conversation> {
     return $Call.ByID(3465756378, id);
+}
+
+export function OpenDecisionBenchmark(id: string): $CancellablePromise<$models.DecisionBenchmark> {
+    return $Call.ByID(4081319758, id);
 }
 
 export function OpenModelBenchmark(id: string): $CancellablePromise<$models.ModelBenchmark> {
@@ -165,6 +226,10 @@ export function SaveDecisionDatasetExport(path: string, contents: string): $Canc
     return $Call.ByID(1806256612, path, contents);
 }
 
+export function SaveDecisionReport(path: string, contents: string): $CancellablePromise<void> {
+    return $Call.ByID(3091072516, path, contents);
+}
+
 export function SaveModelBenchmark(benchmark: $models.ModelBenchmark): $CancellablePromise<$models.ModelBenchmark> {
     return $Call.ByID(3578344020, benchmark);
 }
@@ -183,6 +248,10 @@ export function StartBenchmarkSyncPairing(address: string, code: string): $Cance
 
 export function StartChat(request: $models.ChatRequest): $CancellablePromise<void> {
     return $Call.ByID(1745474569, request);
+}
+
+export function StartDecisionBenchmark(req: $models.DecisionStartRequest): $CancellablePromise<$models.DecisionBenchmark> {
+    return $Call.ByID(3263652020, req);
 }
 
 export function UpdateBenchmarkSyncDeviceName(name: string): $CancellablePromise<$models.BenchmarkSyncState> {

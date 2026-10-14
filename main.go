@@ -12,6 +12,7 @@ var assets embed.FS
 
 func init() {
 	application.RegisterEvent[ChatEvent](chatEventName)
+	application.RegisterEvent[DecisionBenchmarkEvent](decisionEventName)
 	application.RegisterEvent[AgenticEvaluationEvent](agenticEvaluationEventName)
 }
 

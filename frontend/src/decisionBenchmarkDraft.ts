@@ -1,3 +1,6 @@
+import detailedDomainSuite from './datasets/domainDecisionSuiteDetailed.json' with {type: 'json'};
+import domainSuite from './datasets/domainDecisionSuite.json' with {type: 'json'};
+
 export type DecisionType = 'choice' | 'noul' | 'score';
 export type DecisionLanguage = 'ko' | 'en';
 export type DecisionLanguageSelection = DecisionLanguage | 'both';
@@ -8,6 +11,7 @@ export interface DecisionOption {
 }
 
 export interface DecisionTask {
+    context?: Record<DecisionLanguage, string>;
     id: string;
     type: DecisionType;
     name: string;
@@ -16,19 +20,31 @@ export interface DecisionTask {
 }
 
 export interface DecisionCase {
+    instructions?: Record<DecisionLanguage, string>;
     id: string;
     pairID: string;
     taskID: string;
     language: DecisionLanguage;
     text: string;
     expected: string;
+    scenarioID?: string;
+    rationale?: string;
+    candidate?: string;
+    reviewStatus?: string;
 }
 
 export interface DecisionSuite {
+    questionStyle?: 'compact' | 'detailed';
     format: 'decision-benchmark-suite';
     version: 1;
     name: string;
-    source: 'example' | 'custom';
+    source: 'example' | 'custom' | 'builtin';
+    id?: string;
+    revision?: string;
+    reviewStatus?: string;
+    sourceDocument?: string;
+    sourceHash?: string;
+    scoringVersion?: string;
     tasks: DecisionTask[];
     cases: DecisionCase[];
 }
@@ -44,6 +60,7 @@ export interface DecisionTarget {
 }
 
 export interface DecisionDraft {
+    experimentName?: string;
     version: 1;
     suite: DecisionSuite;
     targets: DecisionTarget[];
@@ -59,7 +76,7 @@ export const decisionTypeInfo: Record<DecisionType, {label: string; description:
 export const decisionTypes: DecisionType[] = ['choice', 'noul', 'score'];
 export const decisionDraftStorageKey = 'agent-chat.decision-benchmark-draft.v1';
 
-export function createDecisionDraft(): DecisionDraft {
+export function createExampleDecisionDraft(): DecisionDraft {
     const tasks: DecisionTask[] = [
         {
             id: 'sentiment', type: 'choice', name: '문장 감정 분류',
@@ -115,6 +132,14 @@ export function createDecisionDraft(): DecisionDraft {
     };
 }
 
+export function createDecisionSuite(style: 'compact' | 'detailed' = 'compact'): DecisionSuite {
+    return structuredClone(style === 'detailed' ? detailedDomainSuite : domainSuite) as DecisionSuite;
+}
+
+export function createDecisionDraft(): DecisionDraft {
+    return {...createExampleDecisionDraft(), suite: createDecisionSuite(), language: 'ko', experimentName: '', targets: createExampleDecisionDraft().targets.map((target) => ({...target, runtime: target.runtime === 'laya' ? 'systemone' as const : target.runtime, name: target.model, environment: ''}))};
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -123,14 +148,14 @@ function isBilingual(value: unknown): value is Record<DecisionLanguage, string> 
 }
 function hasSuiteShape(value: unknown): value is DecisionSuite {
     return isObject(value) && value.format === 'decision-benchmark-suite' && value.version === 1
-        && typeof value.name === 'string' && (value.source === 'example' || value.source === 'custom')
+        && typeof value.name === 'string' && (['example', 'custom', 'builtin'].includes(value.source as string))
         && Array.isArray(value.tasks) && value.tasks.every((task) => isObject(task)
             && typeof task.id === 'string' && typeof task.name === 'string' && decisionTypes.includes(task.type as DecisionType)
-            && isBilingual(task.instructions) && Array.isArray(task.options)
+            && isBilingual(task.instructions) && (task.context === undefined || isBilingual(task.context)) && Array.isArray(task.options)
             && task.options.every((option) => isObject(option) && typeof option.key === 'string' && isBilingual(option.descriptions)))
         && Array.isArray(value.cases) && value.cases.every((item) => isObject(item)
             && ['id', 'pairID', 'taskID', 'text', 'expected'].every((key) => typeof item[key] === 'string')
-            && (item.language === 'ko' || item.language === 'en'));
+            && (item.language === 'ko' || item.language === 'en') && (item.instructions === undefined || isBilingual(item.instructions)));
 }
 
 export function validateDecisionSuite(suite: DecisionSuite): string[] {
@@ -148,7 +173,7 @@ export function validateDecisionSuite(suite: DecisionSuite): string[] {
         if (keys.length < 2 || keys.length > 26) issues.push(`${task.name}: 선택지 또는 등급은 2~26개여야 합니다.`);
         if (task.type === 'noul' && (keys.length !== 2 || !keys.includes('true') || !keys.includes('false'))) issues.push(`${task.name}: true / false 선택지가 필요합니다.`);
         if (task.type === 'score' && keys.some((key, index) => key !== String(index))) issues.push(`${task.name}: 등급 번호는 0부터 순서대로 지정해야 합니다.`);
-        for (const language of ['ko', 'en'] as const) {
+        for (const language of (['ko', 'en'] as const).filter((language) => suite.cases.some((item) => item.language === language))) {
             if (!task.instructions[language].trim() || task.options.some((option) => !option.descriptions[language].trim())) issues.push(`${task.name}: ${language === 'ko' ? '한국어' : '영어'} 지시문과 선택지 설명을 채워 주세요.`);
         }
     }
@@ -180,17 +205,29 @@ export function parseDecisionSuite(contents: string): DecisionSuite {
     // Reconstruct known fields, rather than retaining arbitrary imported metadata.
     return {
         format: 'decision-benchmark-suite', version: 1, name: value.name, source: 'custom',
-        tasks: value.tasks.map(({id, type, name, instructions, options}) => ({id, type, name,
+        id: typeof value.id === 'string' ? value.id : undefined,
+        revision: typeof value.revision === 'string' ? value.revision : undefined,
+        questionStyle: value.questionStyle === 'compact' || value.questionStyle === 'detailed' ? value.questionStyle : undefined,
+        sourceDocument: typeof value.sourceDocument === 'string' ? value.sourceDocument : undefined,
+        sourceHash: typeof value.sourceHash === 'string' ? value.sourceHash : undefined,
+        scoringVersion: typeof value.scoringVersion === 'string' ? value.scoringVersion : undefined,
+        reviewStatus: 'unreviewed',
+        tasks: value.tasks.map(({id, type, name, instructions, options, context}) => ({id, type, name,
+            ...(context ? {context: {ko: context.ko, en: context.en}} : {}),
             instructions: {ko: instructions.ko, en: instructions.en},
             options: options.map(({key, descriptions}) => ({key, descriptions: {ko: descriptions.ko, en: descriptions.en}})),
         })),
-        cases: value.cases.map(({id, pairID, taskID, language, text, expected}) => ({id, pairID, taskID, language, text, expected})),
+        cases: value.cases.map(({id, pairID, taskID, language, text, expected, scenarioID, rationale, candidate, instructions}) => ({id, pairID, taskID, language, text, expected,
+            ...(instructions ? {instructions: {ko: instructions.ko, en: instructions.en}} : {}),
+            scenarioID: typeof scenarioID === 'string' ? scenarioID : undefined,
+            rationale: typeof rationale === 'string' ? rationale : undefined,
+            candidate: typeof candidate === 'string' ? candidate : undefined, reviewStatus: 'unreviewed'})),
     };
 }
 
 export function restoreDecisionDraft(contents: string): DecisionDraft {
     const value: unknown = JSON.parse(contents);
-    if (!isObject(value) || value.version !== 1 || !hasSuiteShape(value.suite)
+    if (!isObject(value) || (value.experimentName !== undefined && typeof value.experimentName !== 'string') || value.version !== 1 || !hasSuiteShape(value.suite)
         || !['ko', 'en', 'both'].includes(value.language as string)
         || !Array.isArray(value.types) || !value.types.every((type) => decisionTypes.includes(type))
         || !Array.isArray(value.targets) || !value.targets.every((target) => isObject(target)
@@ -198,7 +235,14 @@ export function restoreDecisionDraft(contents: string): DecisionDraft {
             && ['laya', 'ollama', 'systemone'].includes(target.runtime as string) && typeof target.enabled === 'boolean')) {
         throw new Error('설정 초안을 읽을 수 없습니다.');
     }
-    return value as unknown as DecisionDraft;
+    const draft = value as unknown as DecisionDraft;
+    if (draft.suite.source === 'example' || draft.suite.source === 'builtin' && (draft.suite.id === 'mybee-domain-pilot' || !draft.suite.questionStyle || ['0.3.0-draft-compact','0.4.0-draft-compact','0.3.0-draft-detailed'].includes(draft.suite.revision || ''))) {draft.suite = createDecisionSuite(draft.suite.questionStyle === 'detailed' ? 'detailed' : 'compact'); draft.language = 'ko';}
+    if (!draft.suite.cases.some((item) => item.language === 'en')) draft.language = 'ko';
+    draft.targets = draft.targets.map((target) => target.runtime === 'laya' ? {...target, runtime: 'systemone'} : target);
+    draft.suite = {...draft.suite, name: neutralDecisionText(draft.suite.name)};
+    if (typeof draft.suite.sourceDocument === 'string') draft.suite.sourceDocument = neutralDecisionText(draft.suite.sourceDocument);
+    if (draft.experimentName) draft.experimentName = neutralDecisionText(draft.experimentName);
+    return draft;
 }
 
 export function selectedDecisionCases(suite: DecisionSuite, types: DecisionType[], language: DecisionLanguageSelection): DecisionCase[] {
@@ -210,10 +254,10 @@ export function buildSystemOnePreview(suite: DecisionSuite, item: DecisionCase, 
     const task = suite.tasks.find((entry) => entry.id === item.taskID);
     if (!task) throw new Error('문항에 연결된 과제가 없습니다.');
     return {
-        model: model.trim(), state: {body: item.text},
+        model: model.trim(), state: {body: task.context?.[item.language]?.trim() ? task.context[item.language].trim() + '\n\n' + item.text : item.text},
         questions: {
             decision: {
-                type: task.type, instructions: task.instructions[item.language],
+                type: task.type, instructions: item.instructions?.[item.language]?.trim() || task.instructions[item.language],
                 criteria: task.type === 'score'
                     ? task.options.map((option) => option.descriptions[item.language])
                     : Object.fromEntries(task.options.map((option) => [option.key, option.descriptions[item.language]])),
@@ -227,11 +271,69 @@ export function validateDecisionTargets(targets: DecisionTarget[]): string[] {
     if (!selected.length) return ['평가 대상 모델을 하나 이상 선택해 주세요.'];
     return selected.flatMap((target) => {
         const issues: string[] = [];
-        if (!target.name.trim() || !target.model.trim()) issues.push(`${target.name || '평가 대상'}: 이름과 모델 ID를 입력해 주세요.`);
+        if (!target.model.trim()) issues.push(`${target.name || '평가 대상'}: 모델을 선택해 주세요.`);
         try {
             const url = new URL(target.baseURL);
             if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname.endsWith('/v1/systemone')) throw new Error();
         } catch { issues.push(`${target.name || '평가 대상'}: http(s) 서버 기본 주소를 입력해 주세요. 호출 경로와 인증 정보는 제외합니다.`); }
         return issues;
     });
+}
+
+
+// Import all rows or none; physical line numbers survive quoted multiline cells.
+export function parseDecisionCSV(contents: string, suite: DecisionSuite, defaultTaskID = ''): DecisionSuite {
+    const text = contents.replace(/^\uFEFF/, '');
+    const records: Array<{cells: string[]; line: number}> = [];
+    let cells: string[] = [], field = '', quoted = false, closed = false, line = 1, rowLine = 1;
+    for (let i = 0; i <= text.length; i++) {
+        const ch = text[i];
+        if (quoted) {
+            if (ch === undefined) throw new Error(rowLine + '행: 닫히지 않은 따옴표입니다.');
+            if (ch === '"') {if (text[i + 1] === '"') {field += '"'; i++;} else {quoted = false; closed = true;}}
+            else {field += ch; if (ch === '\n') line++;}
+            continue;
+        }
+        if (ch === '"' && !field && !closed) {quoted = true; continue;}
+        if (ch === ',' || ch === '\n' || ch === '\r' || ch === undefined) {
+            cells.push(field); field = ''; closed = false;
+            if (ch !== ',') {
+                if (cells.some(c => c !== '')) records.push({cells, line: rowLine});
+                cells = [];
+                if (ch === '\r' && text[i + 1] === '\n') i++;
+                line++; rowLine = line;
+            }
+            continue;
+        }
+        if (closed || ch === '"') throw new Error(line + '행: 따옴표 형식이 올바르지 않습니다.');
+        field += ch;
+    }
+    if (records.length < 2) throw new Error('헤더와 문항이 필요합니다.');
+    const headers = records[0].cells.map(c => c.trim());
+    const allowed = ['id', 'pair_id', 'task_id', 'language', 'text', 'expected', 'instructions'];
+    if (new Set(headers).size !== headers.length || headers.some(h => !allowed.includes(h)) || ['id','text','expected'].some(h => !headers.includes(h))) throw new Error('CSV 헤더를 확인해 주세요: id,pair_id,task_id,language,text,expected');
+    const imported: DecisionCase[] = records.slice(1).map(({cells, line}) => {
+        if (cells.length !== headers.length) throw new Error(line + '행: 열 개수가 헤더와 다릅니다.');
+        const row = Object.fromEntries(headers.map((h,i) => [h,cells[i]]));
+        const taskID = row.task_id?.trim() || defaultTaskID;
+        const language = row.language?.trim() || 'ko';
+        if (language !== 'ko') throw new Error(line + '행: 이번 가져오기는 한국어(ko)만 지원합니다.');
+        const task = suite.tasks.find(t=>t.id===taskID);
+        if (!task) throw new Error(line + '행: 등록되지 않은 과제입니다.');
+        if (!row.id.trim() || !row.text.trim() || !task.options.some(o=>o.key===row.expected.trim())) throw new Error(line + '행: ID·본문·정답을 확인해 주세요.');
+        return {id:row.id.trim(), pairID:row.pair_id?.trim() || '', taskID, language, text:row.text, expected:row.expected.trim(), ...(row.instructions?.trim() ? {instructions:{ko:row.instructions,en:''}} : {}), reviewStatus:'unreviewed'};
+    });
+    const idRows=new Map<string,number>(), pairRows=new Map<string,number>();
+    imported.forEach((c,i)=>{const line=records[i+1].line;const pair=c.taskID+'\u0000'+c.pairID;
+        if(idRows.has(c.id)) throw new Error(line+'행: 문항 ID 중복 ('+idRows.get(c.id)+'행).');
+        if(c.pairID && pairRows.has(pair)) throw new Error(line+'행: 대응 문항 ID 중복 ('+pairRows.get(pair)+'행).');
+        idRows.set(c.id,line);if(c.pairID)pairRows.set(pair,line);
+    });
+    const result:DecisionSuite={...suite, source:'custom', revision:'custom-local', reviewStatus:'unreviewed', cases:imported};
+    const issues=validateDecisionSuite(result);if(issues.length)throw new Error(issues.join('\n'));
+    return result;
+}
+
+export function neutralDecisionText(text: string): string {
+    return text.replace(/mybee/gi, '업무영역');
 }

@@ -1986,7 +1986,7 @@ function App() {
                         </div>
                         <div className="decision-sidebar-records">
                             <strong>실행 기록</strong>
-                            <p>실행 기능이 연결되면<br/>저장된 평가 기록이 표시됩니다.</p>
+                            <p>한국어 평가 기록을 저장합니다.<br/>결과 비교에서 기록을 확인하세요.</p>
                         </div>
                     </section>
                 ) : workspace === 'benchmark' ? (

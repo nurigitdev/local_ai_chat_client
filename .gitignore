@@ -47,3 +47,7 @@ build/android/gen/
 .vscode/
 !.vscode/extensions.json
 !.vscode/settings.example.json
+
+# Local Decision report previews and private-server diagnostics
+build/decision-*-readable.html
+build/decision-public-probe.mjs

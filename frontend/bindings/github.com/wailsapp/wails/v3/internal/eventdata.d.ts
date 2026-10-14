@@ -14,6 +14,7 @@ declare module "@wailsio/runtime" {
         interface CustomEvents {
             "agentic-evaluation:event": main$0.AgenticEvaluationEvent;
             "chat:event": main$0.ChatEvent;
+            "decision-benchmark:event": main$0.DecisionBenchmarkEvent;
         }
     }
 }

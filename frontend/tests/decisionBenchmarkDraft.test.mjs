@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     buildSystemOnePreview,
-    createDecisionDraft,
+    createExampleDecisionDraft as createDecisionDraft,
     parseDecisionSuite,
     restoreDecisionDraft,
     selectedDecisionCases,
@@ -51,7 +51,8 @@ test('JSON roundtrip imports as a custom suite and does not retain unrelated sec
     const {suite} = createDecisionDraft();
     const imported = parseDecisionSuite(`\uFEFF${JSON.stringify({...suite, apiKey: 'not-a-real-key', targets: [{apiKey: 'not-a-real-key'}]})}`);
     assert.equal(imported.source, 'custom');
-    assert.deepEqual(imported.cases, suite.cases);
+    assert.deepEqual(imported.cases.map(({scenarioID, rationale, candidate, reviewStatus, ...c}) => c), suite.cases);
+    assert.ok(imported.cases.every(c => c.reviewStatus === 'unreviewed'));
     assert.deepEqual(imported.tasks, suite.tasks);
     assert.equal('apiKey' in imported, false);
     assert.equal('targets' in imported, false);
@@ -85,6 +86,7 @@ test('noul slots and ordinal level order are validated rather than silently rein
 test('draft restore preserves incomplete edits while imports require complete cases', () => {
     const draft = createDecisionDraft();
     draft.suite.source = 'custom';
+    draft.targets = draft.targets.map(t => t.runtime === 'laya' ? {...t, runtime: 'systemone'} : t);
     draft.suite.cases[0].text = '';
     assert.deepEqual(restoreDecisionDraft(JSON.stringify(draft)), draft);
     assert.throws(() => parseDecisionSuite(JSON.stringify(draft.suite)), /비어/);
