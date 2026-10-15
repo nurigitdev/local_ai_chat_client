@@ -334,6 +334,9 @@ export interface DecisionBenchmarkEvent {
 }
 
 export interface DecisionBenchmarkSummary {
+    "rankingRecall"?: number | null;
+    "relevantProbability"?: number | null;
+    "ndcg"?: number | null;
     "targetID": string;
     "taskID": string;
     "type": string;
@@ -384,6 +387,9 @@ export interface DecisionCase {
 }
 
 export interface DecisionCaseResult {
+    "rankingRecall"?: number | null;
+    "relevantProbability"?: number | null;
+    "ndcg"?: number | null;
     "targetID": string;
     "caseID": string;
     "taskID": string;

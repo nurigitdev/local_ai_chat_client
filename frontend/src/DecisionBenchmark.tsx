@@ -2,7 +2,7 @@ import {useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
 import {Dialogs, Events, System} from '@wailsio/runtime';
 import {App as ChatService} from '../bindings/github.com/taengson/agent-chat-desktop';
 import {
-    buildSystemOnePreview, createDecisionDraft, createDecisionSuite, decisionDraftStorageKey, decisionTypeInfo, decisionTypes,
+    createDecisionDraft, createDecisionSuite, decisionDraftStorageKey, decisionTypeInfo, decisionTypes,
     neutralDecisionText, parseDecisionCSV, parseDecisionSuite, restoreDecisionDraft, selectedDecisionCases, validateDecisionSuite, validateDecisionTargets,
     type DecisionCase, type DecisionDraft, type DecisionLanguage, type DecisionLanguageSelection,
     type DecisionSuite, type DecisionTarget, type DecisionType,
@@ -18,13 +18,16 @@ export interface DecisionSidebarState {
     language: string;
 }
 
+const evaluationTypes: DecisionType[] = ['choice', 'ranking'];
+
 const languageLabels: Record<DecisionLanguageSelection, string> = {ko: '한국어', en: '영어', both: '한국어 + 영어'};
 
-function Icon({kind}: {kind: 'models' | 'cases' | 'language' | 'choice' | 'noul' | 'score' | 'arrow' | 'empty'}) {
+function Icon({kind}: {kind: 'models' | 'cases' | 'language' | 'choice' | 'ranking' | 'noul' | 'score' | 'arrow' | 'empty'}) {
     const paths: Record<typeof kind, ReactNode> = {
         models: <><rect x="4" y="4" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/><path d="M8 7h.01M8 17h.01M15 7h2M15 17h2"/></>,
         cases: <><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h3"/></>,
         language: <><path d="M3 5h12M9 3v2M12 5c0 5-4 9-8 11M6 8c1 3 3 5 6 7M14 21l4-10 4 10M16 17h4"/></>,
+        ranking: <><path d="M4 6h2M10 6h10M4 12h2M10 12h10M4 18h2M10 18h10"/></>,
         choice: <><path d="M4 6h2M10 6h10M4 12h2M10 12h10M4 18h2M10 18h10"/><path d="m3 11 2 2 3-4"/></>,
         noul: <><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></>,
         score: <><path d="M4 20V14h4v6M10 20V9h4v11M16 20V4h4v16M3 20h18"/></>,
@@ -37,7 +40,11 @@ function Icon({kind}: {kind: 'models' | 'cases' | 'language' | 'choice' | 'noul'
 function loadDraft(): {draft: DecisionDraft; warning: string} {
     try {
         const stored = window.localStorage.getItem(decisionDraftStorageKey);
-        return {draft: stored ? restoreDecisionDraft(stored) : createDecisionDraft(), warning: ''};
+        const draft = stored ? restoreDecisionDraft(stored) : createDecisionDraft();
+        if (draft.suite.source === 'builtin') draft.suite = createDecisionSuite();
+        draft.types = draft.types.filter(type => evaluationTypes.includes(type) && draft.suite.tasks.some(task=>task.type===type));
+        if (!draft.types.length) draft.types = evaluationTypes.filter(type=>draft.suite.tasks.some(task=>task.type===type));
+        return {draft, warning: ''};
     } catch {
         return {draft: createDecisionDraft(), warning: '저장된 설정 초안을 읽을 수 없어 예제 구성을 열었습니다. JSON으로 내보낸 세트가 있다면 다시 가져와 주세요.'};
     }
@@ -100,8 +107,6 @@ export default function DecisionBenchmark({view, onViewChange, onSidebarChange}:
     const [activeTaskID, setActiveTaskID] = useState(initial.draft.suite.tasks[0]?.id || '');
     const [activeCaseID, setActiveCaseID] = useState('');
     const [search, setSearch] = useState('');
-    const [previewTargetID, setPreviewTargetID] = useState('');
-    const [previewCaseID, setPreviewCaseID] = useState('');
     const [apiKeys, setAPIKeys] = useState<Record<string, string>>({});
     const [isImporting, setIsImporting] = useState(false);
     const [exporting, setExporting] = useState<'json' | 'csv' | null>(null);
@@ -113,14 +118,13 @@ export default function DecisionBenchmark({view, onViewChange, onSidebarChange}:
     useEffect(() => {setConfigurationResult(null);}, [draft, timeoutSeconds]);
     const editable = suite.source === 'custom';
     const activeTask = suite.tasks.find((task) => task.id === activeTaskID) || suite.tasks[0];
-    const selectedCases = useMemo(() => selectedDecisionCases(suite, draft.types, draft.language), [suite, draft.types, draft.language]);
+    const selectedTypes = draft.types.filter(type=>evaluationTypes.includes(type));
+    const selectedCases = useMemo(() => selectedDecisionCases(suite, draft.types.filter(type=>evaluationTypes.includes(type)), draft.language), [suite, draft.types, draft.language]);
     const selectedTargets = draft.targets.filter((target) => target.enabled);
     const visibleCases = suite.cases.filter((item) => item.taskID === activeTask?.id && item.language === editLanguage
         && `${item.id} ${item.text} ${item.expected}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
     const activeCase = visibleCases.find((item) => item.id === activeCaseID) || visibleCases[0];
-    const previewCase = selectedCases.find((item) => item.id === previewCaseID) || selectedCases[0];
-    const previewTarget = draft.targets.find((target) => target.id === previewTargetID) || selectedTargets[0] || draft.targets[0];
-    const preview = previewCase && previewTarget ? buildSystemOnePreview(suite, previewCase, previewTarget.model) : null;
+
 
     useEffect(() => {
         try {
@@ -178,7 +182,7 @@ export default function DecisionBenchmark({view, onViewChange, onSidebarChange}:
         setStarting(true);
         try {
             const run = await ChatService.StartDecisionBenchmark({
-                suite, types: draft.types, targets: draft.targets.map((target) => ({...target, name: target.model})), tokens: apiKeys, timeoutSeconds, experimentName: draft.experimentName || '',
+                suite, types: selectedTypes, targets: draft.targets.map((target) => ({...target, name: target.model})), tokens: apiKeys, timeoutSeconds, experimentName: draft.experimentName || '',
             });
             setActiveRun(run); setResultsRefresh((n) => n + 1); onViewChange('results');
         } catch (error) {announce(String(error), 'error');}
@@ -269,7 +273,8 @@ export default function DecisionBenchmark({view, onViewChange, onSidebarChange}:
         try {
             const contents = await file.text();
             const imported = file.name.toLowerCase().endsWith('.csv') ? parseDecisionCSV(contents, suite, activeTask?.id) : parseDecisionSuite(contents);
-            setDraft((current) => ({...current, suite: imported}));
+            if (imported.tasks.some(task=>!evaluationTypes.includes(task.type))) throw new Error('단일 분류(choice)와 복합 후보 순위(ranking) 세트만 가져올 수 있습니다.');
+            setDraft((current) => ({...current, suite: imported, types: evaluationTypes.filter(type=>imported.tasks.some(task=>task.type===type))}));
             setActiveTaskID(imported.tasks[0].id);
             setActiveCaseID('');
             setSearch('');
@@ -338,7 +343,7 @@ export default function DecisionBenchmark({view, onViewChange, onSidebarChange}:
         }));
     }
 
-    const typeCounts = Object.fromEntries(decisionTypes.map((type) => [type, selectedDecisionCases(suite, [type], draft.language).length])) as Record<DecisionType, number>;
+    const typeCounts = Object.fromEntries(decisionTypes.filter(type=>suite.tasks.some(task=>task.type===type)).map((type) => [type, selectedDecisionCases(suite, [type], draft.language).length])) as Record<DecisionType, number>;
 
     return <section className={`benchmark-page decision-page ${view === 'dataset' ? 'decision-dataset-page' : ''}`} aria-label="Decision Benchmark">
         <header className="decision-header">
@@ -407,13 +412,12 @@ export default function DecisionBenchmark({view, onViewChange, onSidebarChange}:
             </section>
 
             <section className="decision-section decision-config-card" aria-labelledby="decision-suite-heading">
-                <div className="decision-section-heading"><div><span className="decision-step">02</span><h2 id="decision-suite-heading">테스트 구성</h2><p>판단 유형과 언어를 선택해 평가 범위를 정합니다.</p></div><button className="text-button" type="button" onClick={() => onViewChange('dataset')}>문항 확인 <Icon kind="arrow"/></button></div>
-                <div className="decision-suite-banner"><Icon kind="cases"/><div><strong>{neutralDecisionText(suite.name)}</strong><span>{suite.source === 'builtin' ? '기본 제공 · 정답 검토 전 초안 · 한국어 120문항' : '사용자 테스트셋 · 정답과 기준을 검토해 주세요'}</span></div><span className="decision-tag">{suite.source === 'builtin' ? '기본 세트' : '사용자 세트'}</span></div>
-                {suite.source === 'builtin' && <label className="decision-question-style">질문 구성<select value={suite.questionStyle || 'detailed'} onChange={(event) => {const next = createDecisionSuite(event.target.value as 'compact' | 'detailed'); setDraft((current) => ({...current, suite: next})); setActiveTaskID(next.tasks[0].id);}}><option value="compact">간결한 질문 · 기본</option><option value="detailed">상세한 기준 · 긴 입력을 지원하는 서버</option></select><small>같은 실행에서는 모든 모델에 같은 질문 구성을 사용합니다. 간결한 선택형은 선택지에 붙인 짧은 업무 정의로 판단하고, 상세형은 영역별 경계 설명까지 제공합니다.</small></label>}
+                <div className="decision-section-heading"><div><span className="decision-step">02</span><h2 id="decision-suite-heading">테스트 구성</h2><p>단일 업무 분류와 복합 업무 후보 순위 중 평가할 세트를 선택합니다.</p></div><button className="text-button" type="button" onClick={() => onViewChange('dataset')}>문항 확인 <Icon kind="arrow"/></button></div>
+                <div className="decision-suite-banner"><Icon kind="cases"/><div><strong>{neutralDecisionText(suite.name)}</strong><span>{suite.source === 'builtin' ? `기본 제공 · 정답 검토 전 초안 · 한국어 ${suite.cases.length}문항` : '사용자 테스트셋 · 정답과 기준을 검토해 주세요'}</span></div><span className="decision-tag">{suite.source === 'builtin' ? '기본 세트' : '사용자 세트'}</span></div>
                 <div className="decision-type-grid" aria-label="평가 유형 선택">
-                    {decisionTypes.map((type) => <label key={type} className={`decision-type-card ${draft.types.includes(type) ? 'selected' : ''}`}>
-                        <div><Icon kind={type}/><input type="checkbox" checked={draft.types.includes(type)} onChange={(event) => setDraft((current) => ({...current, types: event.target.checked ? [...current.types, type] : current.types.filter((item) => item !== type)}))}/></div>
-                        <strong>{decisionTypeInfo[type].label}<code>{type}</code></strong><p>{decisionTypeInfo[type].description}</p><span>{typeCounts[type]}개 문항</span>
+                    {evaluationTypes.filter(type=>suite.tasks.some(task=>task.type===type)).map((type) => <label key={type} className={`decision-type-card ${draft.types.includes(type) ? 'selected' : ''}`}>
+                        <div><Icon kind={type}/><input type="checkbox" checked={draft.types.includes(type)} onChange={(event) => setDraft((current) => ({...current, types: event.target.checked ? [...current.types.filter(item=>evaluationTypes.includes(item)), type] : current.types.filter((item) => evaluationTypes.includes(item) && item !== type)}))}/></div>
+                        <strong>{type==='choice'?'단일 업무영역 분류':decisionTypeInfo[type].label}</strong><p>{decisionTypeInfo[type].description}</p><span>{typeCounts[type]}개 문항</span>
                     </label>)}
                 </div>
                 <fieldset className="decision-language-field"><legend>평가 언어</legend><div className="decision-language-options">
@@ -421,19 +425,15 @@ export default function DecisionBenchmark({view, onViewChange, onSidebarChange}:
                 </div></fieldset>
             </section>
 
-            <p className="decision-muted">세트 버전 {suite.revision || '미기재'} · 출처 {neutralDecisionText(suite.sourceDocument || '사용자 입력')} · 정답 검토 {suite.reviewStatus || '미확인'}</p>
-            <details className="decision-request-preview"><summary><span>요청 미리보기</span><code>POST /v1/systemone</code><span className="decision-preview-caret">⌄</span></summary>
-                <p>실제 전송될 JSON 구성입니다. 미리보기에서는 서버를 호출하지 않습니다.</p>
-                <div className="decision-field-row"><label>평가 대상<select value={previewTarget?.id || ''} onChange={(event) => setPreviewTargetID(event.target.value)}>{draft.targets.map((target) => <option key={target.id} value={target.id}>{target.model || '모델 미선택'} · {target.baseURL}</option>)}</select></label><label>문항<select value={previewCase?.id || ''} onChange={(event) => setPreviewCaseID(event.target.value)}>{selectedCases.map((item) => <option key={item.id} value={item.id}>{item.language.toUpperCase()} · {item.text.slice(0, 45)}</option>)}</select></label></div>
-                <pre>{preview ? JSON.stringify(preview, null, 2) : '미리보기할 모델과 문항을 선택해 주세요.'}</pre>
-            </details>
+            <p className="decision-muted">세트 버전 {suite.revision || '미기재'} · 출처 {neutralDecisionText(suite.sourceDocument || '사용자 입력')} · 정답 검토 {suite.reviewStatus === 'unreviewed' ? '검토 전 초안' : suite.reviewStatus || '미확인'}</p>
+
 
             <footer className="decision-launch-bar"><div><strong>{selectedTargets.length}개 모델 × {selectedCases.length}개 문항</strong><span>측정 요청 {selectedTargets.length * selectedCases.length}회 · 준비 요청 별도</span></div><div className="decision-launch-actions"><button className="secondary-button" type="button" title="입력 누락·주소 형식·문항과 정답을 검사합니다" onClick={checkConfiguration}>설정 확인</button><button className="primary-button" type="button" disabled={starting || activeRun?.status === 'running'} onClick={() => void startBenchmark()}>{starting ? '시작 중…' : '벤치마크 실행'} <Icon kind="arrow"/></button></div><label>요청 제한<select value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(Number(event.target.value))}><option value={60}>기본 60초</option><option value={180}>느린 서버 180초</option></select></label><p>순차 실행 · 자동 재시도 없음 · 준비 요청은 집계 제외</p>{configurationResult && <div className={`decision-configuration-result ${configurationResult.success ? 'success' : 'error'}`} role={configurationResult.success ? 'status' : 'alert'}><strong>{configurationResult.success ? '✓ 설정 확인 완료' : '! 설정을 수정해 주세요'}</strong><span>{configurationResult.text}</span></div>}</footer>
         </>}
 
         {view === 'dataset' && <>
             <div className="decision-dataset-toolbar"><div><h2>{suite.name}</h2><p>{suite.cases.length}개 문항 · 한국어 평가</p></div><div className="decision-toolbar-actions"><button className="secondary-button" type="button" onClick={() => fileRef.current?.click()} disabled={isImporting || exporting !== null}>{isImporting ? '가져오는 중…' : 'JSON / CSV 가져오기'}</button><button className="secondary-button" type="button" onClick={() => void exportSuite()} disabled={exporting !== null || isImporting}>{exporting === 'json' ? '저장하는 중…' : 'JSON 내보내기'}</button><button className="text-button" type="button" onClick={() => void exportCases()} disabled={exporting !== null || isImporting}>{exporting === 'csv' ? '저장하는 중…' : 'CSV 내보내기'}</button></div></div>
-            {editable && <button className="text-button" type="button" onClick={() => {setDraft((current) => ({...current, suite: createDecisionDraft().suite, language: 'ko'})); setActiveTaskID(createDecisionDraft().suite.tasks[0].id);}}>기본 세트 열기</button>}
+            {editable && <button className="text-button" type="button" onClick={() => {setDraft((current) => ({...current, suite: createDecisionDraft().suite, language: 'ko', types: [...evaluationTypes]})); setActiveTaskID(createDecisionDraft().suite.tasks[0].id);}}>기본 세트 열기</button>}
             <div className="decision-dataset-note"><span className="decision-tag">{editable ? '사용자 세트' : '기본 세트'}</span><p>{editable ? '수정한 내용은 설정 초안으로 자동 저장됩니다. 정답과 기준을 검토해 주세요.' : '업무영역 기반 기본 제공 세트입니다. 정답은 검토 전 초안이며 복제 후 편집할 수 있습니다.'}</p>{!editable && <button className="secondary-button" type="button" onClick={cloneSuite}>사용자 세트로 복제</button>}</div>
             {editable && <label className="decision-suite-name">테스트셋 이름<input value={suite.name} onChange={(event) => updateSuite((current) => ({...current, name: event.target.value}))}/></label>}
 
@@ -462,7 +462,7 @@ export default function DecisionBenchmark({view, onViewChange, onSidebarChange}:
                     <section className="decision-cases-section"><div className="decision-section-heading"><div><h2>테스트 문항 <small>{visibleCases.length}</small></h2></div><button className="secondary-button" type="button" disabled={!editable} onClick={addCase}>+ 문항 추가</button></div>
                         <input className="decision-case-search" type="search" aria-label="테스트 문항 검색" placeholder="문항 내용 · ID · 정답 검색" value={search} onChange={(event) => setSearch(event.target.value)}/>
                         <div className="decision-cases-workspace"><div className="decision-case-list" key={activeTask.id} role="region" aria-label="테스트 문항 목록" tabIndex={0}>{visibleCases.map((item, index) => <button type="button" key={item.id} className={activeCase?.id === item.id ? 'active' : ''} aria-pressed={activeCase?.id === item.id} onClick={() => setActiveCaseID(item.id)}><span className="decision-case-index">{String(index + 1).padStart(2, '0')}</span><span>{item.text || '새 문항 · 텍스트를 입력하세요'}</span><code>{expectedLabel(item, suite)}</code></button>)}{!visibleCases.length && <p className="decision-muted">표시할 문항이 없습니다.</p>}</div>
-                        {activeCase && <div className="decision-case-editor" key={activeCase.id} role="region" aria-label="선택한 문항 상세" tabIndex={0}><h3>선택한 문항</h3><div><span className="decision-tag">{activeCase.language.toUpperCase()}</span><code title={activeCase.pairID}>{activeCase.id}</code>{editable && <button className="text-button danger" type="button" onClick={() => updateSuite((current) => ({...current, cases: current.cases.filter((item) => item.id !== activeCase.id)}))}>이 문항 삭제</button>}</div>{(activeCase.instructions || editable) && <label>이 문항의 판단 질문<small>후보 업무 정의를 질문에 넣습니다. 입력 텍스트에는 실제 요청만 넣습니다.</small><textarea rows={3} readOnly={!editable} value={activeCase.instructions?.[editLanguage] || ''} onChange={(event)=>updateCase(activeCase.id,{instructions:{...(activeCase.instructions || {ko:'',en:''}),[editLanguage]:event.target.value}})}/></label>}<label>입력 텍스트<textarea rows={8} readOnly={!editable} value={activeCase.text} onChange={(event) => updateCase(activeCase.id, {text: event.target.value})}/></label><label>기대 정답<select value={activeCase.expected} disabled={!editable} onChange={(event) => updateCase(activeCase.id, {expected: event.target.value})}><option value="">정답을 선택하세요</option>{activeTask.options.map((option) => <option key={option.key} value={option.key}>{option.key} · {option.descriptions[editLanguage]}</option>)}</select></label><small>정답은 채점에만 사용하며 모델 요청에는 포함되지 않습니다.</small></div>}</div>
+                        {activeCase && <div className="decision-case-editor" key={activeCase.id} role="region" aria-label="선택한 문항 상세" tabIndex={0}><h3>선택한 문항</h3><div><span className="decision-tag">{activeCase.language.toUpperCase()}</span><code title={activeCase.pairID}>{activeCase.id}</code>{editable && <button className="text-button danger" type="button" onClick={() => updateSuite((current) => ({...current, cases: current.cases.filter((item) => item.id !== activeCase.id)}))}>이 문항 삭제</button>}</div>{(activeCase.instructions || editable) && <label>이 문항의 판단 질문<small>후보 업무 정의를 질문에 넣습니다. 입력 텍스트에는 실제 요청만 넣습니다.</small><textarea rows={3} readOnly={!editable} value={activeCase.instructions?.[editLanguage] || ''} onChange={(event)=>updateCase(activeCase.id,{instructions:{...(activeCase.instructions || {ko:'',en:''}),[editLanguage]:event.target.value}})}/></label>}<label>입력 텍스트<textarea rows={8} readOnly={!editable} value={activeCase.text} onChange={(event) => updateCase(activeCase.id, {text: event.target.value})}/></label>{activeTask.type==='ranking'?<label>정답 업무영역 목록<small>예: D04|D05 · 순서는 채점하지 않습니다. 상위 목록 크기는 정답 개수로 정합니다.</small><input readOnly={!editable} value={activeCase.expected} onChange={event=>updateCase(activeCase.id,{expected:event.target.value})}/></label>:<label>기대 정답<select value={activeCase.expected} disabled={!editable} onChange={(event) => updateCase(activeCase.id, {expected: event.target.value})}><option value="">정답을 선택하세요</option>{activeTask.options.map((option) => <option key={option.key} value={option.key}>{option.key} · {option.descriptions[editLanguage]}</option>)}</select></label>}<small>정답은 채점에만 사용하며 모델 요청에는 포함되지 않습니다.</small></div>}</div>
                     </section>
                 </div>}
             </div>

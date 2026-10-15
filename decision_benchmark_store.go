@@ -28,7 +28,7 @@ func (s *decisionBenchmarkStore) directory() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	d := filepath.Join(root, "decision-benchmarks")
+	d := filepath.Join(root, "decision-benchmarks-v2")
 	return d, os.MkdirAll(d, 0700)
 }
 func decisionReport(b DecisionBenchmark, format string) (string, error) {
@@ -87,7 +87,7 @@ func decodeDecisionRecord(data []byte) (DecisionBenchmark, error) {
 	if e = json.Unmarshal(raw, &b); e != nil {
 		return b, e
 	}
-	if b.SchemaVersion != 1 || (b.ScoringVersion != decisionScoringVersion && b.ScoringVersion != legacyDecisionScoringVersion) || !isSafeConversationID(b.ID) {
+	if b.SchemaVersion != 1 || b.ScoringVersion != decisionScoringVersion || !isSafeConversationID(b.ID) {
 		return b, errors.New("지원하지 않는 기록 버전·ID")
 	}
 	if e = validateDecisionSuite(b.Suite); e != nil {
@@ -98,19 +98,6 @@ func decodeDecisionRecord(data []byte) (DecisionBenchmark, error) {
 	}
 	if e = validateDecisionRecord(b); e != nil {
 		return b, e
-	}
-	// Older records did not read truncation metadata nested under usage.
-	for i, r := range b.Results {
-		if r.Status == "completed" {
-			task, _ := decisionTask(b.Suite, r.TaskID)
-			for _, c := range b.Suite.Cases {
-				if c.ID == r.CaseID {
-					graded, _ := scoreDecisionResponse(r.Raw, task, c)
-					b.Results[i].Truncated = graded.Truncated
-					break
-				}
-			}
-		}
 	}
 	b.Summaries = summarizeDecision(b)
 	return b, nil

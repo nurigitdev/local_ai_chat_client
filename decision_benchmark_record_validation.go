@@ -29,7 +29,7 @@ func validateDecisionRecord(b DecisionBenchmark) error {
 	}
 	selected := map[string]bool{}
 	for _, typ := range b.Types {
-		if (typ != "choice" && typ != "noul" && typ != "score") || selected[typ] {
+		if (typ != "choice" && typ != "noul" && typ != "score" && typ != "ranking") || selected[typ] {
 			return errors.New("기록의 평가 유형이 올바르지 않습니다")
 		}
 		selected[typ] = true
@@ -70,9 +70,6 @@ func validateDecisionRecord(b DecisionBenchmark) error {
 				return fmt.Errorf("완료 응답 검증 실패: %w", e)
 			}
 			truncated := r.Truncated
-			if truncated == nil {
-				truncated = graded.Truncated
-			}
 			a, _ := json.Marshal(struct {
 				P         string
 				L         bool
@@ -91,6 +88,13 @@ func validateDecisionRecord(b DecisionBenchmark) error {
 				Mean      float64
 				Truncated *bool
 			}{graded.Predicted, graded.LabelValid, graded.ProbabilityValid, graded.Correct, graded.Probabilities, graded.ExpectedScore, graded.Truncated})
+			if task.Type == "ranking" {
+				aStats, _ := json.Marshal([]*float64{r.RankingRecall, r.RelevantProbability, r.NDCG})
+				gStats, _ := json.Marshal([]*float64{graded.RankingRecall, graded.RelevantProbability, graded.NDCG})
+				if string(aStats) != string(gStats) {
+					return errors.New("후보 순위 채점이 원본과 다릅니다")
+				}
+			}
 			if string(a) != string(z) {
 				return errors.New("채점 결과가 원본 응답과 다릅니다")
 			}

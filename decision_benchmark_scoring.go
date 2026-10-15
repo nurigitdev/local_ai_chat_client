@@ -7,6 +7,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 type DecisionClassMetric struct {
@@ -17,39 +18,42 @@ type DecisionClassMetric struct {
 	F1        *float64 `json:"f1"`
 }
 type DecisionBenchmarkSummary struct {
-	TargetID          string                `json:"targetID"`
-	TaskID            string                `json:"taskID"`
-	Type              string                `json:"type"`
-	Planned           int                   `json:"planned"`
-	Skipped           int                   `json:"skipped"`
-	Pending           int                   `json:"pending"`
-	WarmupFailed      bool                  `json:"warmupFailed"`
-	WarmupError       string                `json:"warmupError"`
-	Attempted         int                   `json:"attempted"`
-	Completed         int                   `json:"completed"`
-	Scorable          int                   `json:"scorable"`
-	ProbabilityCount  int                   `json:"probabilityCount"`
-	Correct           int                   `json:"correct"`
-	Errors            int                   `json:"errors"`
-	Truncated         int                   `json:"truncated"`
-	Accuracy          *float64              `json:"accuracy"`
-	AttemptAccuracy   *float64              `json:"attemptAccuracy"`
-	SuccessRate       *float64              `json:"successRate"`
-	MacroF1           *float64              `json:"macroF1"`
-	TopMAE            *float64              `json:"topMAE"`
-	ExpectedMAE       *float64              `json:"expectedMAE"`
-	Brier             *float64              `json:"brier"`
-	ECE               *float64              `json:"ece"`
-	FalsePositiveRate *float64              `json:"falsePositiveRate"`
-	FalseNegativeRate *float64              `json:"falseNegativeRate"`
-	Confusion         [][]int               `json:"confusion"`
-	Classes           []DecisionClassMetric `json:"classes"`
-	LatencyCount      int                   `json:"latencyCount"`
-	MeanMs            *float64              `json:"meanMs"`
-	P50Ms             *float64              `json:"p50Ms"`
-	P95Ms             *float64              `json:"p95Ms"`
-	MinMs             *float64              `json:"minMs"`
-	MaxMs             *float64              `json:"maxMs"`
+	RankingRecall       *float64              `json:"rankingRecall,omitempty"`
+	RelevantProbability *float64              `json:"relevantProbability,omitempty"`
+	NDCG                *float64              `json:"ndcg,omitempty"`
+	TargetID            string                `json:"targetID"`
+	TaskID              string                `json:"taskID"`
+	Type                string                `json:"type"`
+	Planned             int                   `json:"planned"`
+	Skipped             int                   `json:"skipped"`
+	Pending             int                   `json:"pending"`
+	WarmupFailed        bool                  `json:"warmupFailed"`
+	WarmupError         string                `json:"warmupError"`
+	Attempted           int                   `json:"attempted"`
+	Completed           int                   `json:"completed"`
+	Scorable            int                   `json:"scorable"`
+	ProbabilityCount    int                   `json:"probabilityCount"`
+	Correct             int                   `json:"correct"`
+	Errors              int                   `json:"errors"`
+	Truncated           int                   `json:"truncated"`
+	Accuracy            *float64              `json:"accuracy"`
+	AttemptAccuracy     *float64              `json:"attemptAccuracy"`
+	SuccessRate         *float64              `json:"successRate"`
+	MacroF1             *float64              `json:"macroF1"`
+	TopMAE              *float64              `json:"topMAE"`
+	ExpectedMAE         *float64              `json:"expectedMAE"`
+	Brier               *float64              `json:"brier"`
+	ECE                 *float64              `json:"ece"`
+	FalsePositiveRate   *float64              `json:"falsePositiveRate"`
+	FalseNegativeRate   *float64              `json:"falseNegativeRate"`
+	Confusion           [][]int               `json:"confusion"`
+	Classes             []DecisionClassMetric `json:"classes"`
+	LatencyCount        int                   `json:"latencyCount"`
+	MeanMs              *float64              `json:"meanMs"`
+	P50Ms               *float64              `json:"p50Ms"`
+	P95Ms               *float64              `json:"p95Ms"`
+	MinMs               *float64              `json:"minMs"`
+	MaxMs               *float64              `json:"maxMs"`
 }
 
 func decisionRatio(a, b float64) *float64 {
@@ -131,7 +135,11 @@ func scoreDecisionResponse(raw []byte, task DecisionTask, c DecisionCase) (Decis
 	if err := json.Unmarshal(value, &answer); err != nil {
 		return r, errors.New("판단 응답 형식이 올바르지 않습니다")
 	}
-	if answer.Type != "" && answer.Type != task.Type {
+	wireType := task.Type
+	if wireType == "ranking" {
+		wireType = "choice"
+	}
+	if answer.Type != "" && answer.Type != wireType {
 		return r, errors.New("응답 유형이 요청과 다릅니다")
 	}
 	if answer.Truncated != nil && (r.Truncated == nil || *answer.Truncated) {
@@ -162,7 +170,7 @@ func scoreDecisionResponse(raw []byte, task DecisionTask, c DecisionCase) (Decis
 		if p >= 0.5 {
 			r.Predicted = "true"
 		}
-	case "score":
+	case "score", "ranking":
 	default:
 		return r, fmt.Errorf("지원하지 않는 유형: %s", task.Type)
 	}
@@ -188,7 +196,64 @@ func scoreDecisionResponse(raw []byte, task DecisionTask, c DecisionCase) (Decis
 			}
 		}
 	}
-	r.Correct = r.LabelValid && r.Expected == r.Predicted
+	if task.Type == "ranking" && r.ProbabilityValid {
+		labels := strings.Split(c.Expected, "|")
+		relevant := map[string]bool{}
+		for _, label := range labels {
+			relevant[label] = true
+		}
+		options := append([]DecisionOption(nil), task.Options...)
+		sort.SliceStable(options, func(i, j int) bool { return r.Probabilities[options[i].Key] > r.Probabilities[options[j].Key] })
+		k := len(labels)
+		hits := 0
+		dcg, ideal, mass := 0.0, 0.0, 0.0
+		top := []string{}
+		for _, label := range labels {
+			mass += r.Probabilities[label]
+		}
+		for i := 0; i < k; i++ {
+			key := options[i].Key
+			top = append(top, key)
+			weight := 1 / math.Log2(float64(i+2))
+			ideal += weight
+			if relevant[key] {
+				hits++
+			}
+		}
+		for start := 0; start < k; {
+			end := start + 1
+			for end < k && math.Abs(r.Probabilities[options[end].Key]-r.Probabilities[options[start].Key]) < 1e-12 {
+				end++
+			}
+			count := 0
+			discount := 0.0
+			for i := start; i < end; i++ {
+				if relevant[options[i].Key] {
+					count++
+				}
+				discount += 1 / math.Log2(float64(i+2))
+			}
+			dcg += discount * float64(count) / float64(end-start)
+			start = end
+		}
+		r.Predicted = strings.Join(top, "|")
+		r.LabelValid = true
+		r.Correct = hits == k
+		recall := float64(hits) / float64(k)
+		ndcg := dcg / ideal
+		r.RankingRecall = &recall
+		r.NDCG = &ndcg
+		r.RelevantProbability = &mass
+		if k < len(options) && math.Abs(r.Probabilities[options[k-1].Key]-r.Probabilities[options[k].Key]) < 1e-12 {
+			r.LabelValid = false
+			r.Correct = false
+			r.RankingRecall = nil
+			r.NDCG = nil
+			r.ProbabilityError = "상위 목록 경계의 동률로 순위를 확정할 수 없습니다"
+		}
+	} else {
+		r.Correct = r.LabelValid && r.Expected == r.Predicted
+	}
 	return r, nil
 }
 func summarizeDecision(b DecisionBenchmark) []DecisionBenchmarkSummary {
@@ -220,7 +285,7 @@ func summarizeDecision(b DecisionBenchmark) []DecisionBenchmarkSummary {
 				s.Confusion[i] = make([]int, len(task.Options))
 			}
 			durations := []float64{}
-			var brier, topMAE, expectedMAE float64
+			var brier, topMAE, expectedMAE, rankingRecall, rankingMass, rankingNDCG float64
 			binN := [10]int{}
 			binConf := [10]float64{}
 			binCorrect := [10]float64{}
@@ -249,6 +314,27 @@ func summarizeDecision(b DecisionBenchmark) []DecisionBenchmarkSummary {
 					continue
 				}
 				if r.Status != "completed" {
+					continue
+				}
+				if task.Type == "ranking" {
+					if r.LabelValid {
+						s.Scorable++
+						if r.Correct {
+							s.Correct++
+						}
+						if r.RankingRecall != nil {
+							rankingRecall += *r.RankingRecall
+						}
+						if r.NDCG != nil {
+							rankingNDCG += *r.NDCG
+						}
+					}
+					if r.ProbabilityValid {
+						s.ProbabilityCount++
+						if r.RelevantProbability != nil {
+							rankingMass += *r.RelevantProbability
+						}
+					}
 					continue
 				}
 				if r.LabelValid {
@@ -331,6 +417,16 @@ func summarizeDecision(b DecisionBenchmark) []DecisionBenchmarkSummary {
 			if task.Type == "score" {
 				s.TopMAE = decisionRatio(topMAE, float64(s.Scorable))
 				s.ExpectedMAE = decisionRatio(expectedMAE, float64(s.ProbabilityCount))
+			}
+			if task.Type == "ranking" {
+				s.RankingRecall = decisionRatio(rankingRecall, float64(s.Scorable))
+				s.NDCG = decisionRatio(rankingNDCG, float64(s.Scorable))
+				s.RelevantProbability = decisionRatio(rankingMass, float64(s.ProbabilityCount))
+				s.MacroF1 = nil
+				s.Brier = nil
+				s.ECE = nil
+				s.Classes = nil
+				s.Confusion = nil
 			}
 			s.LatencyCount = len(durations)
 			if len(durations) > 0 {

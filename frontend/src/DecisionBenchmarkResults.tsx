@@ -1,17 +1,22 @@
-import {decisionAnswerLabel, decisionTaskOverview, decisionQuestionText, isDecisionScorable} from './decisionResultPresentation';
+import DecisionCaseResultRow from './DecisionCaseResultRow';
+import {decisionAnswerLabel, decisionTaskOverview, decisionIdentification} from './decisionResultPresentation';
 import {neutralDecisionText} from './decisionBenchmarkDraft';
 import {useEffect, useRef, useState} from 'react';
 import {Dialogs, System} from '@wailsio/runtime';
 import {App as Service} from '../bindings/github.com/taengson/agent-chat-desktop';
 import type {DecisionBenchmark, DecisionBenchmarkSummary, DecisionComparison} from '../bindings/github.com/taengson/agent-chat-desktop/models';
 
-const percent = (n: number | null) => n == null ? '—' : (n * 100).toFixed(1) + '%';
-const value = (n: number | null) => n == null ? '—' : n.toFixed(3);
-const time = (n: number | null) => n == null ? '—' : n.toFixed(0) + ' ms';
+const percent = (n: number | null | undefined) => n == null ? '—' : (n * 100).toFixed(1) + '%';
+const value = (n: number | null | undefined) => n == null ? '—' : n.toFixed(3);
+const time = (n: number | null | undefined) => n == null ? '—' : n.toFixed(0) + ' ms';
 const statuses: Record<string, string> = {running:'실행 중',completed:'완료',partial:'일부 실패',failed:'실패',cancelled:'취소',interrupted:'중단',pending:'대기',skipped:'미실행',error:'오류'};
-const typeNames: Record<string,string> = {choice:'업무영역 분류',noul:'업무영역 해당 여부',score:'업무 적합도 평가'};
+const typeNames: Record<string,string> = {ranking:'복합 업무 후보 순위',choice:'단일 업무영역 분류',noul:'업무영역 해당 여부',score:'업무 적합도 평가'};
 function Metrics({s,b}: {s:DecisionBenchmarkSummary;b:DecisionBenchmark}) {
-    const metrics=[
+    const metrics=s.type==='ranking' ? [
+ ['정답 영역 회수율',percent(s.rankingRecall),'정답 개수만큼의 상위 목록에서 필요한 영역을 찾은 비율입니다. 높을수록 좋습니다.'],
+ ['상위 순위 품질 (NDCG@K)',value(s.ndcg),'필요한 영역이 상위에 있는 정도입니다. 1에 가까울수록 좋습니다.'],
+ ['정답 영역 확률 합',percent(s.relevantProbability),'정답 영역에 배분된 확률의 평균 합입니다. 누락을 숨길 수 있어 보조 지표로 사용합니다.']
+ ] : [
         ['영역별 균형 성능 (Macro F1)',value(s.macroF1),'각 정답 종류의 성능을 같은 비중으로 평균합니다. 1에 가까울수록 좋습니다.'],
         ['확률 오차 (Brier)',value(s.brier),'정답에 부여한 확률의 오차입니다. 0에 가까울수록 좋습니다.'],
         ['확신과 실제 정답률의 차이 (ECE)',value(s.ece),'높게 확신한 판단이 실제로도 맞는지 확인합니다. 0에 가까울수록 좋습니다.'],
@@ -26,22 +31,14 @@ function Metrics({s,b}: {s:DecisionBenchmarkSummary;b:DecisionBenchmark}) {
     ];
     return <section className="decision-analysis-task"><h4>{typeNames[s.type]}</h4><div className="decision-explained-metrics">{metrics.map(([name,n,explanation])=><div key={name}><span>{name}</span><strong>{n}</strong><p>{explanation}</p></div>)}</div>
         <p className="decision-analysis-denominator">정답 평가 {s.scorable}문항 · 확률 평가 {s.probabilityCount}문항 · 입력 잘림으로 제외 {s.truncated}문항</p>
-        <details><summary>어떤 정답을 잘 찾았는지 보기</summary><p>정밀도는 이 답을 선택했을 때 맞은 비율, 재현율은 실제 이 답인 문항을 찾은 비율입니다.</p><div className="decision-table-scroll"><table><thead><tr><th>정답 종류</th><th>정답 문항 수</th><th>정밀도</th><th>재현율</th><th>균형 점수 (F1)</th></tr></thead><tbody>{(s.classes || []).map(c=><tr key={c.key}><th>{decisionAnswerLabel(b,s.taskID,c.key)}</th><td>{c.support}</td><td>{percent(c.precision)}</td><td>{percent(c.recall)}</td><td>{value(c.f1)}</td></tr>)}</tbody></table></div>
-        <h4>다른 답으로 판단한 경우</h4>{(s.confusion || []).flatMap((row,i)=>(row || []).map((n,j)=>i!==j && n>0?<p key={i+':'+j}>{decisionAnswerLabel(b,s.taskID,s.classes?.[i]?.key || '')} → {decisionAnswerLabel(b,s.taskID,s.classes?.[j]?.key || '')} · {n}문항</p>:null)).filter(Boolean)}{!s.scorable && <p>채점된 문항이 없습니다.</p>}</details>
+        {s.type!=='ranking' && <details><summary>어떤 정답을 잘 찾았는지 보기</summary><p>정밀도는 이 답을 선택했을 때 맞은 비율, 재현율은 실제 이 답인 문항을 찾은 비율입니다.</p><div className="decision-table-scroll"><table><thead><tr><th>정답 종류</th><th>정답 문항 수</th><th>정밀도</th><th>재현율</th><th>균형 점수 (F1)</th></tr></thead><tbody>{(s.classes || []).map(c=><tr key={c.key}><th>{decisionAnswerLabel(b,s.taskID,c.key)}</th><td>{c.support}</td><td>{percent(c.precision)}</td><td>{percent(c.recall)}</td><td>{value(c.f1)}</td></tr>)}</tbody></table></div>
+        <h4>다른 답으로 판단한 경우</h4>{(s.confusion || []).flatMap((row,i)=>(row || []).map((n,j)=>i!==j && n>0?<p key={i+':'+j}>{decisionAnswerLabel(b,s.taskID,s.classes?.[i]?.key || '')} → {decisionAnswerLabel(b,s.taskID,s.classes?.[j]?.key || '')} · {n}문항</p>:null)).filter(Boolean)}{!s.scorable && <p>채점된 문항이 없습니다.</p>}</details>}
     </section>;
 }
-function AccuracyDonut({correct,count}: {correct:number;count:number}) {
-    const rate=count ? 100*correct/count : 0;
-    return <figure className={'decision-accuracy-donut '+(!count?'unavailable':'')}>
-        <div className="decision-donut-visual">
-            <svg viewBox="0 0 160 160" aria-hidden="true" focusable="false">
-                <circle className="decision-donut-remainder" cx="80" cy="80" r="65" fill="none" strokeWidth="14"/>
-                {count>0 && <circle className="decision-donut-correct" cx="80" cy="80" r="65" fill="none" strokeWidth="14" pathLength="100" strokeDasharray={rate+' '+(100-rate)} transform="rotate(-90 80 80)"/>}
-            </svg>
-            <div className="decision-donut-center"><b>{count?percent(correct/count):'평가 불가'}</b><span>{count?'정답률':'채점 문항 없음'}</span></div>
-        </div>
-        <figcaption>{count>0?<><strong>{count}문항 중 {correct}문항 정답</strong><div className="decision-donut-legend"><span><i className="correct" aria-hidden="true"/>정답 {correct}</span><span><i className="wrong" aria-hidden="true"/>오답 {count-correct}</span></div></>:<p>채점 가능한 결과가 없습니다.</p>}</figcaption>
-    </figure>;
+function AccuracyDonut({correct,count,ranking=false,segments:rankingSegments=[]}: {correct:number;count:number;ranking?:boolean;segments?:{label:string;color:string;count:number}[]}) {
+ const segments=ranking?rankingSegments:[{label:'정답',count:correct,color:'#4f8063'},{label:'오답',count:count-correct,color:'#dec3ad'}];
+ let offset=0;
+ return <figure className={'decision-accuracy-donut '+(!count?'unavailable':'')}><div className="decision-donut-visual"><svg viewBox="0 0 160 160" aria-hidden="true" focusable="false"><circle cx="80" cy="80" r="65" fill="none" stroke="#e6e9e1" strokeWidth="14"/>{count>0 && segments.map(segment=>{const rate=100*segment.count/count;const position=offset;offset+=rate;return <circle key={segment.label} cx="80" cy="80" r="65" fill="none" stroke={segment.color} strokeWidth="14" pathLength="100" strokeDasharray={rate+' '+(100-rate)} strokeDashoffset={-position} transform="rotate(-90 80 80)"/>;})}</svg><div className="decision-donut-center"><b>{count?percent(correct/count):'평가 불가'}</b><span>{ranking?'전체 식별률':'정답률'}</span></div></div><figcaption>{count>0?<><strong>{count}문항 중 {correct}문항 {ranking?'전체 식별':'정답'}</strong><div className={'decision-donut-legend '+(ranking?'subdivided':'')}>{segments.map(segment=><span key={segment.label}><i style={{background:segment.color}} aria-hidden="true"/>{segment.label}<b>{segment.count}</b></span>)}</div></>:<p>채점 가능한 결과가 없습니다.</p>}</figcaption></figure>;
 }
 function ModelResults({b}: {b:DecisionBenchmark}) {
     const [analysis,setAnalysis]=useState(false);
@@ -49,13 +46,13 @@ function ModelResults({b}: {b:DecisionBenchmark}) {
     return <div className="decision-readable-results">
         <div className="decision-result-mode" role="group" aria-label="결과 보기"><button aria-pressed={!analysis} className={!analysis?'active':''} onClick={()=>setAnalysis(false)}>결과 요약</button><button aria-pressed={analysis} className={analysis?'active':''} onClick={()=>setAnalysis(true)}>상세 분석</button></div>
         {!analysis?<>
-        <div className="decision-outcome-intro"><h3>어떤 판단을 더 잘했나요?</h3><p>세 가지 판단을 각각 비교합니다. 모델 간 정답 차이는 모두가 채점된 같은 문항으로 계산합니다.</p></div>
+        <div className="decision-outcome-intro"><h3>어떤 판단을 더 잘했나요?</h3><p>평가 유형별로 비교합니다. 모델 간 차이는 모두가 채점된 같은 문항으로 계산합니다.</p></div>
         {tasks.map(task=>{
             const overview=decisionTaskOverview(b,task.id);
-            const purpose=task.type==='choice'?'요청을 담당할 업무영역을 골랐는지':task.type==='noul'?'후보 업무영역에 해당하는 요청인지 구분했는지':'부적합·불명확·적합을 기준에 맞게 판단했는지';
+            const purpose=task.type==='ranking'?'복합 요청에 필요한 영역들을 상위에 함께 올렸는지':task.type==='choice'?'요청을 담당할 업무영역을 골랐는지':task.type==='noul'?'후보 업무영역에 해당하는 요청인지 구분했는지':'부적합·불명확·적합을 기준에 맞게 판단했는지';
             return <section className="decision-outcome-task" key={task.id}><header><h3>{typeNames[task.type]}</h3><p>{purpose}</p></header>
-                <div className="decision-outcome-models">{overview.models.map(m=><div key={m.id}><strong>{m.model}</strong><AccuracyDonut correct={m.correct} count={m.count}/>{m.constantAnswer && <p className="decision-pattern-note">{m.count}문항 모두 ‘{m.constantAnswer}’로 판단했습니다. 한 답에 치우친 결과인지 문항별로 확인하세요.</p>}</div>)}</div>
-                <p className="decision-outcome-conclusion">{overview.conclusion}</p>
+                <div className="decision-outcome-models">{overview.models.map(m=><div key={m.id}><strong>{m.model}</strong><AccuracyDonut correct={task.type==='ranking'?m.full:m.correct} count={m.count} ranking={task.type==='ranking'} segments={m.segments}/>{task.type==='ranking' && <p className="decision-results-caption">정답 개수만큼의 상위 후보에서 필요한 업무를 얼마나 식별했는지 평가합니다.</p>}{m.constantAnswer && <p className="decision-pattern-note">{m.count}문항 모두 ‘{m.constantAnswer}’로 판단했습니다. 한 답에 치우친 결과인지 문항별로 확인하세요.</p>}</div>)}</div>
+                {task.type==='ranking' && <p className="decision-results-caption">상위 후보에서 모두 찾은 문항은 모든 정답 업무의 확률로, 일부를 놓친 문항은 빠진 정답 업무의 확률로 나눕니다. ‘누락 업무 {percent(1/(task.options?.length || 1))} 이상’은 빠진 업무가 모두 기준 이상이지만 순위에서 밀린 경우이고, ‘미만’은 하나라도 기준보다 낮은 경우입니다. 중앙의 전체 식별률은 확률 배분과 관계없이 모두 찾은 비율입니다.</p>}<p className="decision-outcome-conclusion">{overview.conclusion}</p>
                 {overview.models.length>1 && overview.models.some(m=>m.count!==overview.sharedCount) && <p className="decision-results-caption">위 비율은 각 모델의 채점 가능 문항 기준입니다. 비교 문장은 공통 {overview.sharedCount}문항만 사용합니다.</p>}
             </section>;
         })}
@@ -68,27 +65,23 @@ function ModelResults({b}: {b:DecisionBenchmark}) {
 function CaseResults({b}: {b:DecisionBenchmark}) {
     const [model,setModel]=useState('all');
     const [task,setTask]=useState('all');
-    const [filter,setFilter]=useState('wrong');
+    const [filter,setFilter]=useState('all');
     const [page,setPage]=useState(0);
     const [focus,setFocus]=useState('');
-    const rows=(b.results || []).filter(r=>(model==='all'||r.targetID===model)&&(task==='all'||r.taskID===task)&&(filter==='all'||filter==='wrong'&&isDecisionScorable(r)&&!r.correct||filter==='error'&&(r.status==='error'||r.status==='cancelled'||r.status==='completed'&&!r.labelValid)||filter==='skipped'&&r.status==='skipped'||filter==='truncated'&&r.truncated));
+    const rows=(b.results || []).filter(r=>(model==='all'||r.targetID===model)&&(task==='all'||r.taskID===task)&&(filter==='all'||filter==='full'&&decisionIdentification(b,r).category==='full'||filter==='partial'&&decisionIdentification(b,r).category==='partial'||filter==='miss'&&decisionIdentification(b,r).category==='miss'||filter==='attention'&&decisionIdentification(b,r).low.length>0||filter==='error'&&(r.status==='error'||r.status==='cancelled'||r.status==='completed'&&!r.labelValid)||filter==='skipped'&&r.status==='skipped'||filter==='truncated'&&r.truncated));
     useEffect(()=>{setPage(0);setFocus('');},[model,task,filter]);
     const current=Math.min(page,Math.max(0,Math.ceil(rows.length/20)-1));
-    const chosen=rows.find(r=>r.targetID+':'+r.caseID===focus);
-    const c=b.suite.cases?.find(c=>c.id===chosen?.caseID);
-    const criteria=b.suite.tasks?.find(t=>t.id===chosen?.taskID);
 
-    return <section className="decision-case-results"><h3>틀린 판단을 확인하세요</h3><p className="decision-results-caption">오답을 먼저 표시합니다. 정답 기준과 모델이 고른 답을 질문과 함께 확인하세요.</p><div className="decision-result-filters">
+    return <section className="decision-case-results"><h3>문항별 판단을 확인하세요</h3><p className="decision-results-caption">문항을 선택해 정답 업무와 모델의 상위 후보, 업무별 확률을 확인하세요.</p><div className="decision-result-filters">
         <label>모델<select value={model} onChange={e=>setModel(e.target.value)}><option value="all">모든 모델</option>{(b.targets || []).map(t=><option key={t.id} value={t.id}>{t.model}</option>)}</select></label>
         <label>판단 유형<select value={task} onChange={e=>setTask(e.target.value)}><option value="all">모든 유형</option>{(b.suite.tasks || []).filter(t=>b.types?.includes(t.type)).map(t=><option key={t.id} value={t.id}>{typeNames[t.type]}</option>)}</select></label>
-        <label>결과<select value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">전체</option><option value="wrong">오답</option><option value="error">오류·채점 불가</option><option value="skipped">미실행</option><option value="truncated">잘린 입력</option></select></label>
+        <label>결과<select value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">전체</option><option value="full">정답·전체 식별</option><option value="partial">일부 식별</option><option value="miss">오답·식별 실패</option><option value="attention">확률 배분 주의</option><option value="error">오류·채점 불가</option><option value="skipped">미실행</option><option value="truncated">잘린 입력</option></select></label>
     </div><div className="decision-table-scroll"><table><thead><tr><th>질문 / 모델</th><th>결과</th><th>정답</th><th>판단</th><th>상세</th></tr></thead><tbody>{rows.slice(current*20,current*20+20).map(r=>{
-        const item=b.suite.cases?.find(c=>c.id===r.caseID);
         const key=r.targetID+':'+r.caseID;
-        return <tr key={key} className={focus===key?'selected':''}><td className="decision-question-cell">{decisionQuestionText(item?.text || r.caseID)}<small>{b.targets?.find(t=>t.id===r.targetID)?.model}{item?.candidate ? ' · 후보 '+decisionAnswerLabel(b,'business-domain-choice',item.candidate):''}</small></td><td><span className={'decision-result-tag '+(r.status==='error'?'error':r.status==='skipped'?'skipped':r.labelValid&&r.correct?'correct':'')}>{r.status==='completed'?(r.truncated?'잘림':r.labelValid?(r.correct?'정답':'오답'):'채점 불가'):statuses[r.status] || r.status}</span></td><td>{decisionAnswerLabel(b,r.taskID,r.expected)}</td><td>{r.predicted?decisionAnswerLabel(b,r.taskID,r.predicted):'—'}</td><td><button type="button" onClick={()=>setFocus(focus===key?'':key)}>{focus===key?'닫기':'보기'}</button></td></tr>;
+        return <DecisionCaseResultRow key={key} b={b} r={r} expanded={focus===key} onToggle={()=>setFocus(focus===key?'':key)}/>;
     })}</tbody></table></div>{!rows.length && <p>해당하는 문항이 없습니다.</p>}
-    <div className="decision-pagination"><span>{rows.length}건 · {current+1} / {Math.max(1,Math.ceil(rows.length/20))}페이지</span><button disabled={current===0} onClick={()=>setPage(current-1)}>이전</button><button disabled={(current+1)*20>=rows.length} onClick={()=>setPage(current+1)}>다음</button></div>
-    {chosen && <article className="decision-case-detail"><h4>선택한 질문의 판단 근거</h4><p>정답: <strong>{decisionAnswerLabel(b,chosen.taskID,chosen.expected)}</strong> · 모델 판단: <strong>{decisionAnswerLabel(b,chosen.taskID,chosen.predicted)}</strong></p>{chosen.error && <div className="decision-result-alert">{chosen.error}</div>}<pre>{c?.text}</pre><p>정답 근거: {c?.rationale || '미기재'}</p><p>{chosen.probabilityError} {chosen.modelWarning}</p>{chosen.status==='completed' && <p>왕복 {chosen.durationMs}ms · {chosen.truncated===null?'잘림 여부 미확인':chosen.truncated?'잘림: 품질 집계 제외':'잘리지 않음'}</p>}<details><summary>판단 기준</summary><pre>{c?.instructions?.ko || criteria?.instructions?.ko}</pre>{criteria?.context?.ko && <><p>공통 업무 설명</p><pre>{criteria.context.ko}</pre></>}<pre>{JSON.stringify(criteria?.options,null,2)}</pre></details><details><summary>확률과 원본 응답</summary><p>반환 모델 {chosen.returnedModel || '미확인'} · 라우팅 모델 {chosen.routingModel || '미확인'}</p><pre>{JSON.stringify(chosen.probabilities,null,2)}</pre><pre>{JSON.stringify(chosen.raw,null,2)}</pre></details></article>}
+    <div className="decision-pagination"><span>{rows.length}건 · {current+1} / {Math.max(1,Math.ceil(rows.length/20))}페이지</span><button disabled={current===0} onClick={()=>{setPage(current-1);setFocus('');}}>이전</button><button disabled={(current+1)*20>=rows.length} onClick={()=>{setPage(current+1);setFocus('');}}>다음</button></div>
+
     </section>;
 }
 export default function DecisionBenchmarkResults({activeRun, refreshKey, onError}: {activeRun: DecisionBenchmark | null; refreshKey:number; onError:(s:string)=>void}) {

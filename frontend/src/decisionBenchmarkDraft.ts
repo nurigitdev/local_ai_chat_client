@@ -1,7 +1,7 @@
 import detailedDomainSuite from './datasets/domainDecisionSuiteDetailed.json' with {type: 'json'};
 import domainSuite from './datasets/domainDecisionSuite.json' with {type: 'json'};
 
-export type DecisionType = 'choice' | 'noul' | 'score';
+export type DecisionType = 'choice' | 'ranking' | 'noul' | 'score';
 export type DecisionLanguage = 'ko' | 'en';
 export type DecisionLanguageSelection = DecisionLanguage | 'both';
 
@@ -69,11 +69,12 @@ export interface DecisionDraft {
 }
 
 export const decisionTypeInfo: Record<DecisionType, {label: string; description: string; metric: string}> = {
+    ranking: {label: '복합 업무 후보 순위', description: '필요한 업무들이 상위 목록에 포함되는지 평가합니다.', metric: '상위 목록 일치율 · 정답 영역 회수율'},
     choice: {label: '선택형 분류', description: '정해진 선택지 중 하나를 판단합니다.', metric: '정확도 · Macro F1'},
     noul: {label: '예 / 아니오', description: '주어진 조건이 참인지 판단합니다.', metric: '정확도 · 오탐 / 누락'},
     score: {label: '등급 평가', description: '기준에 따라 순서가 있는 등급을 판단합니다.', metric: '등급 일치율 · 등급 오차'},
 };
-export const decisionTypes: DecisionType[] = ['choice', 'noul', 'score'];
+export const decisionTypes: DecisionType[] = ['choice', 'ranking', 'noul', 'score'];
 export const decisionDraftStorageKey = 'agent-chat.decision-benchmark-draft.v1';
 
 export function createExampleDecisionDraft(): DecisionDraft {
@@ -137,7 +138,7 @@ export function createDecisionSuite(style: 'compact' | 'detailed' = 'compact'): 
 }
 
 export function createDecisionDraft(): DecisionDraft {
-    return {...createExampleDecisionDraft(), suite: createDecisionSuite(), language: 'ko', experimentName: '', targets: createExampleDecisionDraft().targets.map((target) => ({...target, runtime: target.runtime === 'laya' ? 'systemone' as const : target.runtime, name: target.model, environment: ''}))};
+    return {...createExampleDecisionDraft(), suite: createDecisionSuite(), types: ['choice','ranking'], language: 'ko', experimentName: '', targets: createExampleDecisionDraft().targets.map((target) => ({...target, runtime: target.runtime === 'laya' ? 'systemone' as const : target.runtime, name: target.model, environment: ''}))};
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -184,7 +185,7 @@ export function validateDecisionSuite(suite: DecisionSuite): string[] {
         ids.add(item.id);
         const task = suite.tasks.find((entry) => entry.id === item.taskID);
         if (!task) issues.push(`${item.id}: 등록되지 않은 과제입니다.`);
-        else if (!task.options.some((option) => option.key === item.expected)) issues.push(`${item.id}: 정답이 선택지 또는 등급에 없습니다.`);
+        else if (!(task.type==='ranking' ? item.expected.split('|').length>=2 && new Set(item.expected.split('|')).size===item.expected.split('|').length && item.expected.split('|').every(key=>task.options.some(o=>o.key===key)) : task.options.some((option) => option.key === item.expected))) issues.push(`${item.id}: 정답이 선택지 또는 등급에 없습니다.`);
         if (!item.text.trim()) issues.push(`${item.id}: 입력 텍스트가 비어 있습니다.`);
         if (item.pairID) {
             const pairKey = JSON.stringify([item.taskID, item.pairID, item.language]);
@@ -236,7 +237,7 @@ export function restoreDecisionDraft(contents: string): DecisionDraft {
         throw new Error('설정 초안을 읽을 수 없습니다.');
     }
     const draft = value as unknown as DecisionDraft;
-    if (draft.suite.source === 'example' || draft.suite.source === 'builtin' && (draft.suite.id === 'mybee-domain-pilot' || !draft.suite.questionStyle || ['0.3.0-draft-compact','0.4.0-draft-compact','0.3.0-draft-detailed'].includes(draft.suite.revision || ''))) {draft.suite = createDecisionSuite(draft.suite.questionStyle === 'detailed' ? 'detailed' : 'compact'); draft.language = 'ko';}
+    if (draft.suite.source === 'example' || draft.suite.source === 'builtin' && (draft.suite.id === 'mybee-domain-pilot' || !draft.suite.questionStyle || ['0.3.0-draft-compact','0.4.0-draft-compact','0.3.0-draft-detailed','0.5.0-draft-compact','0.5.0-draft-detailed','0.6.0-draft-compact','0.6.0-draft-detailed'].includes(draft.suite.revision || ''))) {draft.suite = createDecisionSuite(draft.suite.questionStyle === 'detailed' ? 'detailed' : 'compact'); draft.language = 'ko';draft.types=['choice','ranking'];}
     if (!draft.suite.cases.some((item) => item.language === 'en')) draft.language = 'ko';
     draft.targets = draft.targets.map((target) => target.runtime === 'laya' ? {...target, runtime: 'systemone'} : target);
     draft.suite = {...draft.suite, name: neutralDecisionText(draft.suite.name)};
@@ -257,7 +258,7 @@ export function buildSystemOnePreview(suite: DecisionSuite, item: DecisionCase, 
         model: model.trim(), state: {body: task.context?.[item.language]?.trim() ? task.context[item.language].trim() + '\n\n' + item.text : item.text},
         questions: {
             decision: {
-                type: task.type, instructions: item.instructions?.[item.language]?.trim() || task.instructions[item.language],
+                type: task.type === 'ranking' ? 'choice' : task.type, instructions: item.instructions?.[item.language]?.trim() || task.instructions[item.language],
                 criteria: task.type === 'score'
                     ? task.options.map((option) => option.descriptions[item.language])
                     : Object.fromEntries(task.options.map((option) => [option.key, option.descriptions[item.language]])),
@@ -320,7 +321,7 @@ export function parseDecisionCSV(contents: string, suite: DecisionSuite, default
         if (language !== 'ko') throw new Error(line + '행: 이번 가져오기는 한국어(ko)만 지원합니다.');
         const task = suite.tasks.find(t=>t.id===taskID);
         if (!task) throw new Error(line + '행: 등록되지 않은 과제입니다.');
-        if (!row.id.trim() || !row.text.trim() || !task.options.some(o=>o.key===row.expected.trim())) throw new Error(line + '행: ID·본문·정답을 확인해 주세요.');
+        if (!row.id.trim() || !row.text.trim() || !(task.type==='ranking' ? row.expected.trim().split('|').length>=2 && row.expected.trim().split('|').every(key=>task.options.some(o=>o.key===key)) : task.options.some(o=>o.key===row.expected.trim()))) throw new Error(line + '행: ID·본문·정답을 확인해 주세요.');
         return {id:row.id.trim(), pairID:row.pair_id?.trim() || '', taskID, language, text:row.text, expected:row.expected.trim(), ...(row.instructions?.trim() ? {instructions:{ko:row.instructions,en:''}} : {}), reviewStatus:'unreviewed'};
     });
     const idRows=new Map<string,number>(), pairRows=new Map<string,number>();

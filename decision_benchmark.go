@@ -67,13 +67,13 @@ func (a *App) StartDecisionBenchmark(req DecisionStartRequest) (DecisionBenchmar
 	}
 	selected := map[string]bool{}
 	for _, typ := range req.Types {
-		if typ != "choice" && typ != "noul" && typ != "score" {
+		if typ != "choice" && typ != "noul" && typ != "score" && typ != "ranking" {
 			return DecisionBenchmark{}, errors.New("알 수 없는 평가 유형")
 		}
 		selected[typ] = true
 	}
 	types := []string{}
-	for _, typ := range []string{"choice", "noul", "score"} {
+	for _, typ := range []string{"choice", "ranking", "noul", "score"} {
 		if selected[typ] {
 			types = append(types, typ)
 		}

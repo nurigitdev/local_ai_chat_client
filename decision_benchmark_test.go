@@ -15,7 +15,11 @@ import (
 )
 
 func decisionTestSuite() DecisionSuite {
-	s := NewApp().GetDefaultDecisionSuite()
+	s := DecisionSuite{Format: "decision-benchmark-suite", Version: 1, Name: "Protocol fixtures", Tasks: []DecisionTask{
+		{ID: "choice", Type: "choice", Name: "Choice", Instructions: map[string]string{"ko": "Choose sentiment"}, Options: []DecisionOption{{Key: "D01", Descriptions: map[string]string{"ko": "Happy"}}, {Key: "D02", Descriptions: map[string]string{"ko": "Unhappy"}}}},
+		{ID: "noul", Type: "noul", Name: "Noul", Instructions: map[string]string{"ko": "Greeting?"}, Options: []DecisionOption{{Key: "false", Descriptions: map[string]string{"ko": "No greeting"}}, {Key: "true", Descriptions: map[string]string{"ko": "Greeting"}}}},
+		{ID: "score", Type: "score", Name: "Score", Instructions: map[string]string{"ko": "Urgency"}, Options: []DecisionOption{{Key: "0", Descriptions: map[string]string{"ko": "Low"}}, {Key: "1", Descriptions: map[string]string{"ko": "Medium"}}, {Key: "2", Descriptions: map[string]string{"ko": "High"}}}},
+	}, Cases: []DecisionCase{{ID: "c", TaskID: "choice", Language: "ko", Text: "Very happy", Expected: "D01"}, {ID: "n", TaskID: "noul", Language: "ko", Text: "Hello", Expected: "true"}, {ID: "s", TaskID: "score", Language: "ko", Text: "Need now", Expected: "2"}}}
 	cases := []DecisionCase{}
 	for _, task := range s.Tasks {
 		for _, c := range s.Cases {
@@ -62,7 +66,7 @@ func TestDecisionBuiltinAndRequests(t *testing.T) {
 	if e := validateDecisionSuite(s); e != nil {
 		t.Fatal(e)
 	}
-	if len(s.Cases) != 120 {
+	if len(s.Cases) != 40 {
 		t.Fatal(len(s.Cases))
 	}
 	counts := map[string]int{}
@@ -79,7 +83,7 @@ func TestDecisionBuiltinAndRequests(t *testing.T) {
 			}
 		}
 	}
-	if counts["choice"] != 20 || counts["noul"] != 40 || counts["score"] != 60 {
+	if counts["choice"] != 20 || counts["ranking"] != 20 {
 		t.Fatal(counts)
 	}
 }
@@ -529,30 +533,6 @@ func TestDecisionStopsOnMidRunSaveFailure(t *testing.T) {
 	}
 }
 
-func TestDecisionLegacyReportRemainsReadableWithNeutralDisplay(t *testing.T) {
-	s := decisionTestSuite()
-	s.Name = "MyBee 업무영역"
-	s.SourceDocument = "MyBee_코드체계_설계서"
-	c := s.Cases[0]
-	task := s.Tasks[0]
-	r, _ := scoreDecisionResponse(decisionFixture(task, c.Expected), task, c)
-	r.TargetID = "t"
-	r.Status = "completed"
-	b := DecisionBenchmark{ID: newConversationID(), SchemaVersion: 1, ScoringVersion: legacyDecisionScoringVersion, Suite: s, Targets: []DecisionTarget{{ID: "t", BaseURL: "http://localhost:12300", Model: "multilingual"}}, Types: []string{"choice"}, TimeoutSeconds: 60, Status: "completed", Results: []DecisionCaseResult{r}}
-	b.Fingerprint = decisionFingerprintForVersion(s, b.Types, legacyDecisionScoringVersion)
-	report, e := decisionReport(b, "md")
-	if e != nil {
-		t.Fatal(e)
-	}
-	if strings.Contains(report, "MyBee") {
-		t.Fatal("brand leaked into visible report")
-	}
-	restored, e := decodeDecisionRecord([]byte(report))
-	if e != nil || restored.Fingerprint != b.Fingerprint || restored.Suite.Name != s.Name {
-		t.Fatal("legacy snapshot was not preserved", e)
-	}
-}
-
 func TestDecisionWarmupFailureOnlySkipsItsTask(t *testing.T) {
 	s := decisionTestSuite()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -663,7 +643,6 @@ func TestDecisionUsageTruncationMetadata(t *testing.T) {
 		}
 		r.TargetID = "t"
 		r.Status = "completed"
-		r.Truncated = nil // simulate a record saved before usage support
 		b := DecisionBenchmark{ID: newConversationID(), SchemaVersion: 1, ScoringVersion: decisionScoringVersion, Suite: s, Targets: []DecisionTarget{{ID: "t", Model: "model", BaseURL: "http://localhost:12300"}}, Types: []string{"choice", "noul", "score"}, TimeoutSeconds: 60, Status: "completed", Results: []DecisionCaseResult{r}}
 		for _, item := range s.Cases[1:] {
 			b.Results = append(b.Results, DecisionCaseResult{TargetID: "t", TaskID: item.TaskID, CaseID: item.ID, Expected: item.Expected, Status: "skipped"})
@@ -688,7 +667,7 @@ func TestDecisionUsageTruncationMetadata(t *testing.T) {
 
 func TestDecisionSeparatedQuestionContract(t *testing.T) {
 	s := NewApp().GetDefaultDecisionSuite()
-	if s.Revision != "0.5.0-draft-compact" || len(s.Tasks[0].Context) != 0 {
+	if s.Revision != "0.7.0-draft-compact" || len(s.Tasks[0].Context) != 0 {
 		t.Fatal("wrong default")
 	}
 	for _, c := range s.Cases {
@@ -719,5 +698,29 @@ func TestDecisionSeparatedQuestionContract(t *testing.T) {
 	old.Cases[20].Instructions = map[string]string{"ko": "different question"}
 	if decisionFingerprint(s, []string{"noul"}) == decisionFingerprint(old, []string{"noul"}) {
 		t.Fatal("question change ignored")
+	}
+}
+
+func TestDecisionNewResultsAreIndependent(t *testing.T) {
+	a := NewApp()
+	a.decisions.root = t.TempDir()
+	older := filepath.Join(a.decisions.root, "decision-benchmarks")
+	if e := os.MkdirAll(older, 0700); e != nil {
+		t.Fatal(e)
+	}
+	file := filepath.Join(older, "old.md")
+	if e := os.WriteFile(file, []byte("existing result"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	records, e := a.ListDecisionBenchmarks()
+	if e != nil || len(records) != 0 {
+		t.Fatal("previous results linked", records, e)
+	}
+	if _, e = os.Stat(file); e != nil {
+		t.Fatal("previous file changed", e)
+	}
+	dir, e := a.decisions.directory()
+	if e != nil || filepath.Base(dir) != "decision-benchmarks-v2" {
+		t.Fatal(dir, e)
 	}
 }

@@ -4,15 +4,14 @@ import {readFile} from 'node:fs/promises';
 import {createDecisionSuite,createDecisionDraft,createExampleDecisionDraft,restoreDecisionDraft,parseDecisionCSV,parseDecisionSuite,validateDecisionSuite,buildSystemOnePreview} from '../.vite/test/decisionBenchmarkDraft.js';
 
 test('the default is exactly the agreed Korean question set, with no answer metadata in requests',async()=>{
- const draft=createDecisionDraft();assert.equal(draft.language,'ko');assert.equal(draft.suite.source,'builtin');assert.equal(draft.suite.cases.length,120);assert.deepEqual(validateDecisionSuite(draft.suite),[]);
+ const draft=createDecisionDraft();assert.equal(draft.language,'ko');assert.equal(draft.suite.source,'builtin');assert.equal(draft.suite.cases.length,40);assert.deepEqual(validateDecisionSuite(draft.suite),[]);
  const counts={};for(const c of draft.suite.cases){assert.equal(c.language,'ko');const task=draft.suite.tasks.find(t=>t.id===c.taskID);counts[task.type]=(counts[task.type]||0)+1;const preview=buildSystemOnePreview(draft.suite,c,'multilingual');const keys=Object.keys(preview);assert.deepEqual(keys,['model','state','questions']);assert.equal(JSON.stringify(preview).includes(c.id),false);assert.equal('expected' in preview.state,false);}
- assert.deepEqual(counts,{choice:20,noul:40,score:60});
- assert.deepEqual(draft.suite.tasks[2].options.map(o=>o.descriptions.ko.split(':')[0]),['부적합','불명확','적합']);
- const doc=await readFile(new URL('../../docs/decision-benchmark-domain-question-set.md',import.meta.url),'utf8');const rows=doc.split('\n').filter(l=>/^\| [CNS]-D/.test(l));assert.equal(rows.length,120);
- for(const row of rows){const cells=row.split('|').slice(1,-1).map(c=>c.trim());const c=draft.suite.cases.find(c=>c.pairID===cells[0]);assert.ok(c);assert.equal(c.expected,cells[cells[0].startsWith('C-')?2:3]);assert.ok(c.text.includes(cells[cells[0].startsWith('C-')?1:2]));}
+ assert.deepEqual(counts,{choice:20,ranking:20});
+ assert.equal(draft.suite.tasks[1].type,'ranking');
+
 });
 test('legacy examples migrate while custom work and target profiles survive',()=>{
- const old=createExampleDecisionDraft();old.targets[0].baseURL='http://spark:12300';const migrated=restoreDecisionDraft(JSON.stringify(old));assert.equal(migrated.suite.cases.length,120);assert.deepEqual(migrated.targets,old.targets.map(t=>t.runtime==='laya'?{...t,runtime:'systemone'}:t));
+ const old=createExampleDecisionDraft();old.targets[0].baseURL='http://spark:12300';const migrated=restoreDecisionDraft(JSON.stringify(old));assert.equal(migrated.suite.cases.length,40);assert.deepEqual(migrated.targets,old.targets.map(t=>t.runtime==='laya'?{...t,runtime:'systemone'}:t));
  old.suite.source='custom';old.targets=old.targets.map(t=>t.runtime==='laya'?{...t,runtime:'systemone'}:t);assert.deepEqual(restoreDecisionDraft(JSON.stringify(old)),old);
 });
 test('JSON roundtrip preserves known provenance without accepting review completion or secrets',()=>{
@@ -69,10 +68,10 @@ test('definitions and candidate questions stay outside the state while imports p
   assert.equal(request.questions.decision.instructions,c.instructions?.ko || task.instructions.ko);
   assert.equal(JSON.stringify(request).includes(c.rationale),false);
  }
- const imported=parseDecisionSuite(JSON.stringify(draft.suite));assert.deepEqual(imported.cases[20].instructions,draft.suite.cases[20].instructions);
+ const imported=parseDecisionSuite(JSON.stringify(draft.suite));assert.equal(imported.cases[20].expected,draft.suite.cases[20].expected);
  assert.throws(()=>parseDecisionSuite(JSON.stringify({...draft.suite,cases:[{...draft.suite.cases[0],instructions:'invalid'}]})),/형식/);
  draft.suite.revision='0.4.0-draft-compact';draft.suite.tasks[0].context={ko:'legacy definitions',en:''};
- const loaded=restoreDecisionDraft(JSON.stringify(draft));assert.equal(loaded.suite.tasks[0].context,undefined);assert.equal(loaded.suite.revision,'0.5.0-draft-compact');
- const csv='id,task_id,text,expected,instructions\nc1,'+loaded.suite.tasks[1].id+',요청,true,회로 설계 요청인가요?\n';
+ const loaded=restoreDecisionDraft(JSON.stringify(draft));assert.equal(loaded.suite.tasks[0].context,undefined);assert.equal(loaded.suite.revision,'0.7.0-draft-compact');
+ const csv='id,task_id,text,expected,instructions\nc1,'+loaded.suite.tasks[1].id+',요청,D01|D02,회로 설계 요청인가요?\n';
  assert.equal(parseDecisionCSV(csv,loaded.suite).cases[0].instructions.ko,'회로 설계 요청인가요?');
 });

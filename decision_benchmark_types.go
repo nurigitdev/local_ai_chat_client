@@ -15,8 +15,7 @@ import (
 //go:embed frontend/src/datasets/domainDecisionSuite.json
 var decisionBuiltinJSON []byte
 
-const decisionScoringVersion = "business-domain-scoring-v1"
-const legacyDecisionScoringVersion = "mybee-domain-scoring-v1"
+const decisionScoringVersion = "business-domain-ranking-v2"
 const decisionEventName = "decision-benchmark:event"
 
 type DecisionOption struct {
@@ -77,27 +76,30 @@ type DecisionStartRequest struct {
 	TimeoutSeconds int               `json:"timeoutSeconds"`
 }
 type DecisionCaseResult struct {
-	TargetID         string             `json:"targetID"`
-	CaseID           string             `json:"caseID"`
-	TaskID           string             `json:"taskID"`
-	Status           string             `json:"status"`
-	Expected         string             `json:"expected"`
-	Predicted        string             `json:"predicted"`
-	Correct          bool               `json:"correct"`
-	LabelValid       bool               `json:"labelValid"`
-	ProbabilityValid bool               `json:"probabilityValid"`
-	ProbabilityError string             `json:"probabilityError,omitempty"`
-	Probabilities    map[string]float64 `json:"probabilities,omitempty"`
-	ExpectedScore    float64            `json:"expectedScore"`
-	Error            string             `json:"error,omitempty"`
-	StartedAt        string             `json:"startedAt"`
-	FinishedAt       string             `json:"finishedAt"`
-	DurationMs       int64              `json:"durationMs"`
-	Truncated        *bool              `json:"truncated"`
-	ReturnedModel    string             `json:"returnedModel"`
-	RoutingModel     string             `json:"routingModel"`
-	ModelWarning     string             `json:"modelWarning,omitempty"`
-	Raw              json.RawMessage    `json:"raw,omitempty"`
+	RankingRecall       *float64           `json:"rankingRecall,omitempty"`
+	RelevantProbability *float64           `json:"relevantProbability,omitempty"`
+	NDCG                *float64           `json:"ndcg,omitempty"`
+	TargetID            string             `json:"targetID"`
+	CaseID              string             `json:"caseID"`
+	TaskID              string             `json:"taskID"`
+	Status              string             `json:"status"`
+	Expected            string             `json:"expected"`
+	Predicted           string             `json:"predicted"`
+	Correct             bool               `json:"correct"`
+	LabelValid          bool               `json:"labelValid"`
+	ProbabilityValid    bool               `json:"probabilityValid"`
+	ProbabilityError    string             `json:"probabilityError,omitempty"`
+	Probabilities       map[string]float64 `json:"probabilities,omitempty"`
+	ExpectedScore       float64            `json:"expectedScore"`
+	Error               string             `json:"error,omitempty"`
+	StartedAt           string             `json:"startedAt"`
+	FinishedAt          string             `json:"finishedAt"`
+	DurationMs          int64              `json:"durationMs"`
+	Truncated           *bool              `json:"truncated"`
+	ReturnedModel       string             `json:"returnedModel"`
+	RoutingModel        string             `json:"routingModel"`
+	ModelWarning        string             `json:"modelWarning,omitempty"`
+	Raw                 json.RawMessage    `json:"raw,omitempty"`
 }
 type DecisionBenchmark struct {
 	ExperimentName string                     `json:"experimentName,omitempty"`
@@ -163,7 +165,7 @@ func validateDecisionSuite(s DecisionSuite) error {
 			}
 		}
 		switch t.Type {
-		case "choice", "score":
+		case "choice", "score", "ranking":
 		case "noul":
 			if len(keys) != 2 || !keys["false"] || !keys["true"] {
 				return errors.New("noul은 false/true 선택지가 필요합니다")
@@ -182,6 +184,23 @@ func validateDecisionSuite(s DecisionSuite) error {
 		for _, o := range t.Options {
 			if o.Key == c.Expected {
 				valid = true
+			}
+		}
+		if t.Type == "ranking" {
+			labels := strings.Split(c.Expected, "|")
+			seen := map[string]bool{}
+			valid = len(labels) >= 2
+			for _, label := range labels {
+				found := false
+				for _, o := range t.Options {
+					if o.Key == label {
+						found = true
+					}
+				}
+				if !found || seen[label] {
+					valid = false
+				}
+				seen[label] = true
 			}
 		}
 		if !valid {
@@ -239,5 +258,9 @@ func buildDecisionRequest(t DecisionTarget, task DecisionTask, c DecisionCase) (
 	if override := strings.TrimSpace(c.Instructions["ko"]); override != "" {
 		instructions = override
 	}
-	return json.Marshal(map[string]any{"model": strings.TrimSpace(t.Model), "state": map[string]string{"body": body}, "questions": map[string]any{"decision": map[string]any{"type": task.Type, "instructions": instructions, "criteria": criteria}}})
+	wireType := task.Type
+	if wireType == "ranking" {
+		wireType = "choice"
+	}
+	return json.Marshal(map[string]any{"model": strings.TrimSpace(t.Model), "state": map[string]string{"body": body}, "questions": map[string]any{"decision": map[string]any{"type": wireType, "instructions": instructions, "criteria": criteria}}})
 }

@@ -51,3 +51,4 @@ build/android/gen/
 # Local Decision report previews and private-server diagnostics
 build/decision-*-readable.html
 build/decision-public-probe.mjs
+build/report-review/

@@ -10,6 +10,7 @@
     "src/agenticResult.ts",
     "src/benchmarkComparison.ts",
     "src/decisionBenchmarkDraft.ts",
-    "src/decisionResultPresentation.ts"
+    "src/decisionResultPresentation.ts",
+    "src/DecisionCaseResultRow.tsx"
   ]
 }
